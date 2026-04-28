@@ -1,0 +1,13 @@
+# Compiled output
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dll
+
+# Build folders
+build/
+bin/
+obj/
