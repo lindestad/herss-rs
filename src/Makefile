@@ -1,37 +1,28 @@
 #/********************************************************************************
 # Project:      The Hydraulic Economic River System Simulator (HERSS)
 # Filename:     Makefile
-# Developer:    Bernt Viggo Matheussen (Bernt.Viggo.Matheussen@aenergi.no)
+# Developer:    Bernt Viggo Matheussen, Ove Arstad
 # Organization: Å Energi, www.ae.no
 #
-# This software is released under the MIT license:
+# This software is released under the MIT license
+# Copyright (c) <2024> <Å Energi, Bernt Viggo Matheussen, Ove Arstad>
 
-# Copyright (c) <2024> <Å Energi, Bernt Viggo Matheussen>
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
 #********************************************************************************/
 
 CC   = g++
 OBJ  =  main.o node.o globalconfig.o line.o reservoir.o dataset.o qmin.o \
-		powerstation.o channel.o riversystem.o scenario.o herss.o arraycurve.o
+		powerstation.o channel.o riversystem.o scenario.o herss.o arraycurve.o \
+		xtime.o topoparser.o logger.o cascadedreservoirs.o
 INCS =  -I.
 BIN  = herss.exe
 LIB = herss.so
+
+# TESTS
+TEST_DIR = ../src_tests
+TEST_SRC = $(wildcard $(TEST_DIR)/*.cpp)
+TEST_OBJ_FILES = $(patsubst $(TEST_DIR)/%.cpp, %.o, $(TEST_SRC))
+TEST_OBJ = $(filter-out main.o, $(OBJ)) $(TEST_OBJ_FILES)
+GTEST_DIR = /usr/src/gtest
 
 # Memory check with Valgrind
 # valgrind --leak-check=full --show-leak-kinds=all ../herss.exe global_utahps_hourly.txt
@@ -39,15 +30,30 @@ LIB = herss.so
 # Optimize for speed using O3 flag.
 # CFLAGS = $(INCS) -Wall -O3
 
+# BVM, May 2026. 
+# We have started to use logging inside HERSS. 
+# This may slow down computations, but it is very useful for debugging and testing.
+# If we want to do sampling or other large runs, we can turn off logging completely. 
+# See the file logger.h for more details. 
+
+# Build option, with or without logging, 0,1 (default 0, with logging)
+NO_LOG ?= 0
+
 # Compile for testing and debugging. 
-CFLAGS = $(INCS) -Wall -g -pedantic -fPIC
+CFLAGS = $(INCS) -Wall -O3 -pedantic -fPIC
+
+ifeq ($(NO_LOG),1)
+  CFLAGS += -DHERSS_NO_LOG
+endif
+
+TEST_CFLAGS = $(CFLAGS) -I$(GTEST_DIR)/include -pthread
 
 
 RM = rm -f
 .PHONY: all all-before all-after clean clean-custom
 all: all-before ${BIN} ${LIB} all-after
 clean:
-	${RM} ${OBJ} *.core *.so *.stackdump *~ *.exe
+	 ${RM} ${OBJ} *.core *.so *.stackdump *~ *.exe $(TEST_OBJ_FILES)
 all-clean: clean
 	${RM} ${BIN}
 
@@ -59,7 +65,27 @@ $(BIN): $(OBJ)
 $(LIB): $(OBJ)
 	$(CC) -shared -o ${LIB} ${OBJ}
 
-main.o: main.cpp herss.h
+# TEST TARTGET
+test: $(TEST_OBJ) gtest_main.o gtest-all.o
+	$(CC) $(TEST_CFLAGS) -o test_runner $^ -lpthread
+	./test_runner --gtest_color=yes --gtest_brief=1
+
+gtest_main.a: gtest-all.o
+	ar -rv gtest_main.a gtest-all.o
+
+gtest-all.o:
+	$(CC) -I$(GTEST_DIR)/include -I$(GTEST_DIR) -c $(GTEST_DIR)/src/gtest-all.cc -o gtest-all.o
+
+gtest_main.o:
+	$(CC) $(TEST_CFLAGS) -c $(GTEST_DIR)/src/gtest_main.cc -o gtest_main.o
+
+# Rule to build test object files
+%.o: $(TEST_DIR)/%.cpp
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+
+
+
+main.o: main.cpp herss.h logger.h
 	$(CC) $(CFLAGS) -c main.cpp -o main.o
 
 node.o: node.cpp herss.h
@@ -89,11 +115,24 @@ riversystem.o: riversystem.cpp herss.h
 scenario.o: scenario.cpp herss.h
 	$(CC) $(CFLAGS) -c scenario.cpp -o scenario.o
 
-herss.o: herss.cpp herss.h
+herss.o: herss.cpp herss.h logger.h
 	$(CC) $(CFLAGS) -c herss.cpp -o herss.o
 
 qmin.o: qmin.cpp herss.h
 	$(CC) $(CFLAGS) -c qmin.cpp -o qmin.o
 
+xtime.o: xtime.cpp herss.h
+	$(CC) $(CFLAGS) -c xtime.cpp -o xtime.o
+
+topoparser.o: topoparser.cpp herss.h
+	$(CC) $(CFLAGS) -c topoparser.cpp -o topoparser.o
+
 arraycurve.o: arraycurve.cpp herss.h arraycurve.h
 	$(CC) $(CFLAGS) -c arraycurve.cpp -o arraycurve.o
+
+logger.o: logger.cpp herss.h
+	$(CC) $(CFLAGS) -c logger.cpp -o logger.o
+
+cascadedreservoirs.o: cascadedreservoirs.cpp herss.h logger.h
+	$(CC) $(CFLAGS) -c cascadedreservoirs.cpp -o cascadedreservoirs.o
+

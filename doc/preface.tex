@@ -1,0 +1,66 @@
+% --- Preface ---
+\newpage
+\thispagestyle{empty}
+
+\begin{center}
+	\Large\textbf{Preface}
+\end{center}
+
+\vspace{2em}
+
+Welcome to the user manual and technical documentation for the Hydraulic Economic River System Simulator (HERSS). HERSS is a lightweight and flexible simulation model for analysing the hydrology, hydraulics, and operation of regulated river systems, with particular emphasis on hydropower applications. The model can be used to simulate how water moves through a river system, how reservoirs and power stations interact, and how operational decisions and market conditions influence system behaviour over time.
+
+This document is intended to provide enough information for users to get started with HERSS and to use the software effectively. A basic background in hydrology, river hydraulics, and hydropower is beneficial, but not strictly required. Some familiarity with working in a terminal on Ubuntu/Linux, or in Windows Subsystem for Linux (WSL), is also helpful when running the software and examples.
+
+Regardless of your level of experience, the aim of this manual is to help you get up to speed with setting up simulations, understanding the model input and output, and using HERSS to analyse the dynamics of regulated river systems.
+
+Please note that both the HERSS software and this documentation are still work in progress. The model is under active development, and some parts of the code, test datasets, and documentation may contain errors, inconsistencies, or incomplete descriptions. Not all details of the current HERSS version are yet fully documented, and in some cases the source code remains the most complete reference for how calculations are performed.
+
+HERSS is developed as an open-source project, and contributions are welcome. Users and developers are encouraged to report issues, suggest improvements, and participate in further development of the model. The long-term goal of the HERSS project is to provide a fast, transparent, and adaptable simulation tool for a wide range of analyses of regulated river systems.
+\newpage 
+
+
+The HERSS model has been developed over several years, and many summer interns in Å Energi have used the software. The software has also been used in master thesis work, e.g. at the Univerity of Bergen. The timeline of major contributions in the HERSS project is shown in table \ref{tab:history}. 
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{p{0.3\textwidth} p{0.65\textwidth}}
+		\hline
+		\textbf{Timeline} & \textbf{Changes/Contributions} \\
+		\hline
+		
+		Spring 2023 &
+		Initial code, testdata and documentation developed by BVM \\
+		\\
+		
+		Summer 2023 &
+		Development of testdata for Tovdalen Artifical Hydro Power System (TAHPS), by Kim Ly  \\
+		\\
+		
+		
+		Spring 2024 & GitHub repository established, by BVM \\
+		\\
+		
+		Summer 2025 & 
+		Main changes in the project: Added multi-generator support for up
+		to six generators per power station. Added multi-temporal-
+		resolution for simulation of varying timesteps. Added fast
+		overflow. Added date check. Developed testing suite for HERSS
+		functionality. This work was done by Ove Arstad. \\
+		\\
+		
+		Spring 2026 & 
+		Major upgrade and merging of new functionality (multi-resolution, multi-generator, new routing algorithm, etc). New documentation, plots, new test datasets, quality control, logging, etc. BVM May 2026. \\
+		
+		\hline
+	\end{tabular}
+	\caption{Timeline of the development and contributions to the HERSS project}
+	\label{tab:history}
+\end{table}
+
+The HERSS project is supported by Å Energi (www.aenergi.no) \\
+
+Bernt Viggo Matheussen, June 1, 2026.
+
+
+

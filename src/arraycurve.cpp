@@ -5,36 +5,36 @@ Developer:    Bernt Viggo Matheussen (Bernt.Viggo.Matheussen@aenergi.no)
 Organization: Å Energi, www.ae.no
 
 This software is released under the MIT license:
-
 Copyright (c) <2024> <Å Energi, Bernt Viggo Matheussen>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ********************************************************************************/
 
 #include "arraycurve.h"
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <herss.h>
+#include <string>
+#include <limits>
+#include "herss.h"
+
+// Static variable to track current timestep for error reporting
+static size_t current_timestep = 0;
+// Static variables to track current node for error reporting
+static size_t current_node_idnr = 0;
+static std::string current_node_name = "";
 
 ArrayCurve::ArrayCurve(){}
 ArrayCurve::~ArrayCurve(){}
+
+void ArrayCurve::setCurrentTimestep(size_t timestep) {
+    current_timestep = timestep;
+}
+
+// Function to set current node information for error reporting
+void ArrayCurve::setCurrentNode(size_t idnr, const std::string& nodename) {
+    current_node_idnr = idnr;
+    current_node_name = nodename;
+}
 
 
 //////////////////////////////////////////////////////////////////
@@ -101,24 +101,35 @@ double ArrayCurve::x2y(double x) {
     xt = (x-xmin)/(xmax-xmin);
 
     if(xt > 1.0 || xt < 0.0) {
+
+        LOG_WARN("ERROR with normalization   [0,1]");
+
         printf("ERROR with normalization   [0,1]\n");
         printf("xt=%.8f\n", xt );
+        printf("xmin = %.4f\n", xmin );
+        printf("xmax = %.4f\n", xmax );
+        printf("timestep = %zu\n", current_timestep );
+        printf("node idnr = %zu, nodename = %s\n", current_node_idnr, current_node_name.c_str() );
         for(int i = 0; i < nr_pts; i++) {
             printf("%d x_points[i]=%.5f  y_points[i]=%.5f\n", i, x_points[i], y_points[i]);
         }
-        printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		exit(EXIT_FAILURE);
+        
+        return -1.0 * VERY_LARGE_NUMBER;
+
     }
 
     int idx;
     idx = int(  0.5 +  ( xt - x_points[0]) / (x_points[nr_pts-1] - x_points[0]) * double(POINTS_IN_ARRAY)) ;
 
     if(xt < x_points[0] || xt > x_points[nr_pts-1]) {
+        
+        LOG_WARN("ERROR: x value is out of bounds for interpolation");
+
         printf("HOUSTON - we have a problem!\n");
         printf("x=%.3f\n", xt);
         printf("idx = %d\n", idx);
         printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		exit(EXIT_FAILURE);
+        return -1.0 * VERY_LARGE_NUMBER;
     }
 
     double y;

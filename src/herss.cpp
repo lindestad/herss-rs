@@ -31,6 +31,7 @@ SOFTWARE.
 #include <random>
 #include <functional>
 #include <limits>
+#include <cmath>
 
 Herss::Herss(){}
 
@@ -39,13 +40,16 @@ Herss::Herss(GlobalConfig *gc){
 
     this->gc = gc;
 
-    if(gc->dt < 1 ) {
-        printf("Please set gc->dt correctly\n");
-        exit(-9);
-    }
     if(gc->nr_nodes < 1 ) {
-        printf("Please set gc->nr_nodes correctly\n");
-        exit(-9);
+        LOG_ERR("nr_nodes < 1");
+    }
+
+    if(gc->dt < 1 ) {
+        LOG_ERR("dt < 1");
+    }
+
+    if(gc->stps < 1 ) {
+        LOG_ERR("stps < 1");
     }
 
     this->dt       = gc->dt;
@@ -60,9 +64,7 @@ Herss::Herss(GlobalConfig *gc){
         }
     }
     catch(bad_alloc &) {
-        cout << "Bad allocation" << std::endl;
-        printf("file: %s  linenr: %d\n", __FILE__ , __LINE__);
-        exit(EXIT_FAILURE);
+        LOG_ERR("Bad allocation");
     }
 
 }
@@ -77,25 +79,119 @@ Herss::~Herss(){
     this->gc = NULL;
 }
 /////////////////////////////////////////////////////////////////////
-int Herss::prepaireSimulation(Dataset *data) {
+// This function is used to read the topology file.
+// It is used when we instansiate the herss object from scratch
+void Herss::ReadTopologyFile(string filename) {
 
     for(size_t n = 0; n < gc->nr_nodes; n++) {
         rs->nodes[n]->ReadNodeData(gc->topologyfile);
         rs->nodes[n]->S = this->scen[n];
         rs->nodes[n]->S->dt   = gc->dt;
         rs->nodes[n]->S->stps = gc->stps;
+        rs->nodes[0]->S->restprice = -1*NOT_INIT;
     }
+
+    for(size_t n = 0; n < gc->nr_nodes; n++) {
+        rs->nodes[n]->ReadStateFile(gc->start_statefile);
+    }
+
+    for(size_t n = 0; n < gc->nr_nodes; n++) {
+        rs->nodes[n]->initArrayCurves();
+    }
+
+    for(size_t r = 0; r < gc->nr_reservoirs; r++) {
+        rs->reservoirs[r].InitReservoir();
+        size_t node_idnr = rs->reservoirs[r].idnr;
+        rs->nodes[node_idnr]->reservoir_idnr = r;
+    }
+
+    SetPointers();
+
+}
+/////////////////////////////////////////////////////////////////////
+int Herss::prepaireSimulation(Dataset *data) {
+
+	string line;
+    string keyword;
+    string value;
+    string str_idnr;
+    string str_name;
+    Line line_obj;
+
+    this->data = data;  // Store dataset reference for variable timesteps
+
+    // Set the nodenames, nodetypes in each node
+    for (size_t i = 0; i < gc->topoparser.getLineCount(); ++i) {
+        line = gc->topoparser.getLine(i);
+        string tmpline = line;  // Create a copy of the line for parsing
+        keyword = line_obj.extractNextElementFromLine(&line);
+        value   = line_obj.extractNextElementFromLine(&line);
+        
+        if (keyword == "NODE") {
+            if(value.empty()) {
+                LOG_ERR("ERROR: something is worng in topology file "  + gc->topologyfile + "see line " + tmpline);
+            }
+
+            if (value == "RESERVOIR") {
+                str_idnr = line_obj.extractNextElementFromLine(&line);
+                str_name = line_obj.extractNextElementFromLine(&line);
+
+                size_t node_id = std::stoul(str_idnr);
+                if (node_id >= gc->nr_nodes) {
+                    LOG_ERR("Error: Node ID " + std::to_string(node_id) + " exceeds the number of nodes (" + std::to_string(gc->nr_nodes) );
+                }
+
+                rs->nodes[node_id]->nodename = str_name;
+                rs->nodes[node_id]->idnr = node_id;   
+                rs->nodes[node_id]->nodetype = NodeType::RESERVOIR; 
+            }
+            else if (value == "PSTATION") {
+                str_idnr = line_obj.extractNextElementFromLine(&line);
+                str_name = line_obj.extractNextElementFromLine(&line);
+                size_t node_id = std::stoul(str_idnr);
+                if (node_id >= gc->nr_nodes) {
+                    LOG_ERR("Error: Node ID " + std::to_string(node_id) + " exceeds the number of nodes (" + std::to_string(gc->nr_nodes) + ")");
+                }
+                rs->nodes[node_id]->nodename = str_name;
+                rs->nodes[node_id]->idnr = node_id;   
+                rs->nodes[node_id]->nodetype = NodeType::PSTATION; 
+            }
+            else if (value == "CHANNEL") {
+                str_idnr = line_obj.extractNextElementFromLine(&line);
+                str_name = line_obj.extractNextElementFromLine(&line);
+                size_t node_id = std::stoul(str_idnr);
+                if (node_id >= gc->nr_nodes) {
+                    LOG_ERR("Error: Node ID " + std::to_string(node_id) + " exceeds the number of nodes (" + std::to_string(gc->nr_nodes) + ")");
+                }
+                rs->nodes[node_id]->nodename = str_name;
+                rs->nodes[node_id]->idnr = node_id;   
+                rs->nodes[node_id]->nodetype = NodeType::CHANNEL;
+            }
+            else {
+                LOG_ERR("ERROR: Invalid nodetype in topology file it must be RESERVOIR, PSTATION or CHANNEL" + gc->topologyfile);
+            }
+        }
+    }
+
+    for(size_t n = 0; n < gc->nr_nodes; n++) {
+        rs->nodes[n]->ReadNodeData(gc->topologyfile);
+        rs->nodes[n]->S = this->scen[n];
+        rs->nodes[n]->S->dt   = gc->dt;
+        rs->nodes[n]->S->stps = gc->stps;
+        rs->nodes[0]->S->restprice = data->restprice;
+    }
+
 
     // Transfer data to nodes/scenarios
     for( size_t t = 0; t < stps; ++t ) {
         for(size_t n = 0; n < gc->nr_nodes; n++) {
-            rs->nodes[n]->S->inflow[t] = data->inflow[t][n];
-            rs->nodes[n]->S->action[t] = data->action[t][n];
-            rs->nodes[n]->S->price[t]  = data->price[t];
-            rs->nodes[n]->S->year[t]   = data->year[t];
-            rs->nodes[n]->S->month[t]  = data->month[t];
-            rs->nodes[n]->S->day[t]    = data->day[t];
-            rs->nodes[n]->S->hour[t]   = data->hour[t];
+            rs->nodes[n]->S->inflow[t]    = data->inflow[t][n];
+            rs->nodes[n]->S->action[t][n] = data->action[t][n];
+            rs->nodes[n]->S->price[t]     = data->price[t];
+            rs->nodes[n]->S->year[t]      = data->year[t];
+            rs->nodes[n]->S->month[t]     = data->month[t];
+            rs->nodes[n]->S->day[t]       = data->day[t];
+            rs->nodes[n]->S->hour[t]      = data->hour[t];
         }
     }
 
@@ -106,18 +202,66 @@ int Herss::prepaireSimulation(Dataset *data) {
 
     // Initialize all arraycurves 
     for(size_t n = 0; n < gc->nr_nodes; n++) {
-        //printf("Init array curves \n");
         rs->nodes[n]->initArrayCurves();
     }
 
     for(size_t r = 0; r < gc->nr_reservoirs; r++) {
         rs->reservoirs[r].InitReservoir();
-
         size_t node_idnr = rs->reservoirs[r].idnr;
         rs->nodes[node_idnr]->reservoir_idnr = r;
-
     }
 
+    SetPointers();
+
+
+    // CHANGES BY OVE: Map generator actions from actions.txt to each generator in each powerstation
+    if(!data->action_colnames.empty()) {
+        for (size_t n = 0; n < gc->nr_nodes; ++n) {
+            Node* node = rs->nodes[n];
+            if (node->nodetype == NodeType::PSTATION) {
+                Powerstation* ps = static_cast<Powerstation*>(node);
+                int ps_id = ps->idnr;
+                for (size_t g = 0; g < ps->generators.size(); ++g) {
+                    // Build the expected column name "1_0"
+                    std::string colname = std::to_string(ps_id) + "_" + std::to_string(g);
+                
+                    // Find the column index in Dataset
+                    int col_idx = -1;
+                    for (size_t c = 0; c < data->action_colnames.size(); ++c) {
+                        if (data->action_colnames[c] == colname) {
+                            col_idx = c;
+                            break;
+                        }
+                    }
+                    if (col_idx == -1) {
+                        LOG_ERR("ERROR: Could not find action column for generator " + colname + " in action file");
+                    }
+                
+                    // Fill the generators action vector for all timesteps
+                    ps->generators[g].action.clear();
+                for (size_t t = 0; t < data->stps; ++t) {
+                    ps->generators[g].action.push_back(data->action[t][col_idx]);
+                }
+            }
+        }
+    }} else {
+        // If no action file data, initialize generator action vectors with zeros 
+        for (size_t n = 0; n < gc->nr_nodes; ++n) {
+            Node* node = rs->nodes[n];
+            if (node->nodetype == NodeType::PSTATION) {
+                Powerstation* ps = static_cast<Powerstation*>(node);
+                for (size_t g = 0; g < ps->generators.size(); ++g) {
+                    ps->generators[g].action.resize(data->stps, 0.0);
+                }
+            }
+        }
+        LOG_ERR("WARNING: No action column names found in dataset, generator actions initialized to zero");
+    }
+
+    return 0;
+}
+/////////////////////////////////////////////////////////////////////
+void Herss::SetPointers() {
     // Set pointers for the different outlets (RESERVOIR) and downstream nodes (CHANNEL/POWERSTATION)
     for(size_t n = 0; n < gc->nr_nodes; n++) {
         
@@ -131,44 +275,35 @@ int Herss::prepaireSimulation(Dataset *data) {
 
         if( rs->nodes[n]->outlet_tunnel_in_use) {
             if(rs->nodes[n]->downstream_idnr_tunnel > int(this->nr_nodes-1)  ) {
-                printf("ERROR:  There is something wrong with node idnrs. \n");
-                printf("rs->nodes[n]->downstream_idnr_tunnel = %d\n", rs->nodes[n]->downstream_idnr_tunnel);
-                printf("nr_nodes = %lu\n", this->nr_nodes);
-                printf("Please check your node idnrs in the topology file\n");
-                printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-                exit(EXIT_FAILURE);
+                LOG_WARN("ERROR:  There is something wrong with node idnrs");
+                LOG_WARN("rs->nodes[n]->downstream_idnr_tunnel = " + std::to_string(rs->nodes[n]->downstream_idnr_tunnel));
+                LOG_WARN("nr_nodes = " + std::to_string(this->nr_nodes));
+                LOG_ERR("Please check your node idnrs in the topology file");
             }
             rs->nodes[n]->ptr_downstream_node_tunnel = rs->nodes[rs->nodes[n]->downstream_idnr_tunnel];
         }
 
         if( rs->nodes[n]->outlet_overflow_in_use) {
             if(  rs->nodes[n]->downstream_idnr_overflow > int(this->nr_nodes-1)  ) {
-                printf("ERROR:  There is something wrong with node idnrs. \n");
-                printf("rs->nodes[n]->downstream_idnr_overflow = %d\n", rs->nodes[n]->downstream_idnr_overflow);
-                printf("nr_nodes = %lu\n", this->nr_nodes);
-                printf("Please check your node idnrs in the topology file\n");
-                printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-                exit(EXIT_FAILURE);
+                LOG_WARN("ERROR:  There is something wrong with node idnrs");
+                LOG_WARN("rs->nodes[n]->downstream_idnr_overflow = " + std::to_string(rs->nodes[n]->downstream_idnr_overflow));
+                LOG_WARN("nr_nodes = " + std::to_string(this->nr_nodes));
+                LOG_ERR("Please check your node idnrs in the topology file");
             }
             rs->nodes[n]->ptr_downstream_node_overflow = rs->nodes[rs->nodes[n]->downstream_idnr_overflow];
         }
-
 
         if( rs->nodes[n]->outlet_auto_qmin_in_use ) {
             rs->nodes[n]->ptr_downstream_node_auto_qmin = rs->nodes[rs->nodes[n]->downstream_idnr_auto_qmin];
         }
     }
-
-    return 0;
 }
 /////////////////////////////////////////////////////////////////////
 int Herss::WriteStateFile() {
 
     FILE *fp;
     if((fp = fopen(gc->out_statefile.c_str() ,"w"))==NULL) {
-        printf("Cannot open file %s \n", gc->out_statefile.c_str() );
-        printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-        exit(EXIT_FAILURE);
+        LOG_ERR("Cannot open file " + gc->out_statefile);
     }
 
     for(size_t n = 0; n < gc->nr_nodes; n++) {
@@ -179,21 +314,67 @@ int Herss::WriteStateFile() {
     return 0;
 }
 /////////////////////////////////////////////////////////////////////
-void Herss::SetAction(size_t node_idnr, size_t t, double value) {
-    // this->scen[idx]->action[t] = value;
-    rs->nodes[node_idnr]->S->action[t] = value;
+void Herss::SetAction(size_t node_idnr, size_t gen_idnr, size_t t, double value) {
+
+    if (rs->nodes[node_idnr]->nodetype == NodeType::PSTATION) {
+        Powerstation* ps = static_cast<Powerstation*>(rs->nodes[node_idnr]);
+        if (gen_idnr >= ps->generators.size()) {
+            LOG_ERR("SetAction: gen_idnr " + std::to_string(gen_idnr) + " out of range");
+        }
+        ps->generators[gen_idnr].action[t] = value;
+    }
+    else if (rs->nodes[node_idnr]->nodetype == NodeType::RESERVOIR) {
+        Reservoir* res = static_cast<Reservoir*>(rs->nodes[node_idnr]);
+        if (!res->outlet_hatch_in_use) {
+            LOG_ERR("SetAction: RESERVOIR node " + std::to_string(node_idnr) + " has no hatch outlet");
+        }
+        res->S->action[t][node_idnr] = value;
+    }
+    else {
+        LOG_ERR("SetAction: node " + std::to_string(node_idnr) + " is not a PSTATION or RESERVOIR");
+    }
+
+    // Old code before multi-generator support    
+    // rs->nodes[node_idnr]->S->action[t][node_idnr] = value;
+
 }
 /////////////////////////////////////////////////////////////////////
-double Herss::GetAction(size_t node_idnr, size_t t) {
-    return rs->nodes[node_idnr]->S->action[t];
+double Herss::GetAction(size_t node_idnr, size_t gen_idnr, size_t t) {
+
+    if (rs->nodes[node_idnr]->nodetype == NodeType::PSTATION) {
+        Powerstation* ps = static_cast<Powerstation*>(rs->nodes[node_idnr]);
+        if (gen_idnr >= ps->generators.size()) {
+            LOG_ERR("GetAction: gen_idnr " + std::to_string(gen_idnr) + " out of range");
+        }
+        return ps->generators[gen_idnr].action[t];
+    }
+    else if (rs->nodes[node_idnr]->nodetype == NodeType::RESERVOIR) {
+        Reservoir* res = static_cast<Reservoir*>(rs->nodes[node_idnr]);
+        if (!res->outlet_hatch_in_use) {
+            LOG_ERR("GetAction: RESERVOIR node " + std::to_string(node_idnr) + " has no hatch outlet");
+        }
+        return res->S->action[t][node_idnr];
+    }
+    else {
+        LOG_ERR("GetAction: node " + std::to_string(node_idnr) + " is not a PSTATION or RESERVOIR");
+    }
+
+    return -9.0;
+
+    // Old code before multi-generator support  
+    // return rs->nodes[node_idnr]->S->action[t][node_idnr];
+
 }
 /////////////////////////////////////////////////////////////////////
 void Herss::PrintActions() {
-    printf("Actions = ");
-    for( size_t t = 0; t < stps; ++t ) {
-        for(size_t n = 0; n < this->gc->n_action_nodes; ++n) {
-            size_t idx = this->gc->actions_idnrs[n];
-            printf("%.2f ", this->scen[idx]->action[t]);
+    printf("ACTIONS: \n");
+    for(size_t t = 0; t < gc->stps; t++) {
+        for(size_t n = 0; n < gc->nr_nodes; n++) {
+            for(size_t g = 0; g < gc->nr_nodes; g++) { 
+                if(rs->nodes[n]->S->action[t][g] > -0.01 && rs->nodes[n]->S->action[t][g] < 1.01) {
+                    printf("%.5f ", rs->nodes[n]->S->action[t][g]);
+                }
+            }
         }
         printf("\n");
     }
@@ -203,17 +384,18 @@ void Herss::SetReservoir_Init_fr(size_t node_idnr, double value) {
 
     // We check if the node_idnr is of type Reservoir
     if( rs->nodes[node_idnr]->nodetype != NodeType::RESERVOIR ) {
-        printf("\nERROR: You are trying to set initial reservoir levels in a node that is not of NodeType::RESERVOIR\n");
-        printf("node_idnr = %lu , nodename = %s\n", node_idnr, rs->nodes[node_idnr]->nodename.c_str() );
+        LOG_WARN("\nERROR: You are trying to set initial reservoir levels in a node that is not of NodeType::RESERVOIR\n");
+        LOG_WARN("node_idnr = " + std::to_string(node_idnr) + " , nodename = " + rs->nodes[node_idnr]->nodename);
         string str_nodetype = EnumToString(rs->nodes[node_idnr]->nodetype);
-        cout << "str_nodetype = " << str_nodetype << endl;
-        printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-	    exit(EXIT_FAILURE);
+        LOG_WARN("str_nodetype = " + str_nodetype);
+        LOG_ERR("Please check your input make sure you are setting initial reservoir levels in the correct nodes");
     }
 
     if(value < 0.0 || value > 1.1) {
-        printf("WARNING:  initial reservoir levels are weird\n");
-        printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
+        size_t res_idnr = rs->nodes[node_idnr]->reservoir_idnr;
+        const char* res_name = rs->reservoirs[res_idnr].nodename.c_str();
+        LOG_WARN("WARNING: initial reservoir level is weird: value= " + std::to_string(value) + ", reservoir=" + std::string(res_name));
+        
     }
 
     //cout << "reservoir_idnr = " << rs->nodes[node_idnr]->reservoir_idnr << endl;
@@ -224,14 +406,14 @@ void Herss::SetReservoir_Init_fr(size_t node_idnr, double value) {
 void Herss::PrintReservoirLevels_fr() {
     printf("Initial Reservoir_fr= ");
     for(size_t r = 0; r < gc->nr_reservoirs; r++) {
-        printf("%.3f ", rs->reservoirs[r].reservoir_init_fr);
+        printf("%.5f ", rs->reservoirs[r].reservoir_init_fr);
     }
     printf("\n");
 
     printf("Current Reservoir_fr= ");
     for(size_t r = 0; r < gc->nr_reservoirs; r++) {
         rs->reservoirs[r].InitReservoir();
-        printf("%.3f ", rs->reservoirs[r].res_fr);
+        printf("%.5f ", rs->reservoirs[r].res_fr);
     }
     printf("\n");
 }
@@ -240,7 +422,7 @@ void Herss::PrintRemainingChannelWater_Mm3(){
     if( gc->nr_channels > 0 ) {
         printf("RemainingChannelWater_Mm3= ");
         for(size_t c = 0; c < gc->nr_channels; c++) {
-            printf("%.5f " , rs->channels[c].remaining_available_Mm3);
+            printf("%.5f " , rs->channels[c].remaining_Mm3);
         }
         printf("\n");
     }
@@ -250,23 +432,21 @@ void Herss::PrintRemainingChannelWater_Mm3(){
 }
 /////////////////////////////////////////////////////////////////////
 double Herss::GetRestPrice() {
-    printf("WORK IN PROGRESS\n");
-    exit(EXIT_FAILURE);
+    LOG_ERR("WORK IN PROGRESS\n");
     return -9;
 }
 /////////////////////////////////////////////////////////////////////
 void Herss::PrintInflowSeries(size_t t) {
-    printf("Reservoir inflow= ");
+    printf("Reservoir inflow:\n");
     for(size_t r = 0; r < gc->nr_reservoirs; r++) {
-        printf("%.4f ", rs->reservoirs[r].S->inflow[t]);
+        printf("RESERVOIR:  %-20s  %.4f \n", rs->reservoirs[r].nodename.c_str()   , rs->reservoirs[r].S->inflow[t]);
     }
     printf("\n");
 }
 /////////////////////////////////////////////////////////////////////
 // Print Price, Pend, Inflow and initial Reservoir levels. 
 void Herss::PrintState() {
-    printf("WORK IN PROGRESS");
-
+    LOG_ERR("WORK IN PROGRESS");
 }
 /////////////////////////////////////////////////////////////////////
 void Herss::SetPrice(size_t t, double price, double restprice) {
@@ -277,31 +457,42 @@ void Herss::SetPrice(size_t t, double price, double restprice) {
 }
 /////////////////////////////////////////////////////////////////////
 void Herss::PrintAllInput() {
+
     printf("Price: ");
     for(size_t t = 0; t < gc->stps; t++) {
-        printf("%.2f ", rs->nodes[0]->S->price[t]);
+        printf("%.5f ", rs->nodes[0]->S->price[t]);
     }
     printf("\n");
-    printf("Restprice = %.2f\n", rs->nodes[0]->S->restprice);
+
+    printf("Restprice = %.5f\n", rs->nodes[0]->S->restprice);
+
     printf("Inflow\n");
     for(size_t t = 0; t < gc->stps; t++) {
         for(size_t r = 0; r < gc->nr_reservoirs; r++) {
-            printf("%.4f ", rs->reservoirs[r].S->inflow[t]);
+            printf("%.5f ", rs->reservoirs[r].S->inflow[t]);
         }
         printf("\n");
     }
-
-    PrintReservoirLevels_fr();
 
     printf("ACTIONS: \n");
     for(size_t t = 0; t < gc->stps; t++) {
         for(size_t n = 0; n < gc->nr_nodes; n++) {
-            if(rs->nodes[n]->S->action[t] > -0.01   &&  rs->nodes[n]->S->action[t] < 1.01  ) { 
-                printf("%.2f ", rs->nodes[n]->S->action[t]);
+            if(rs->nodes[n]->S->action[t][n] > -0.01   &&  rs->nodes[n]->S->action[t][n] < 1.01  ) { 
+                printf("%.2f ", rs->nodes[n]->S->action[t][n]);
             }
-        }
+    }
         printf("\n");
     }
+
+    //PrintReservoirLevels_fr();
+    // printf("Overflow_Mm3\n");
+    // for(size_t t = 0; t < gc->stps; t++) {
+    //     for(size_t r = 0; r < gc->nr_reservoirs; r++) {
+    //         printf("%.5f ", rs->reservoirs[r].S->overflow_Mm3[t]);
+    //     }
+    //     printf("\n");
+    // }
+
 }
 /////////////////////////////////////////////////////////////////////
 void Herss::SetInflowInNode(size_t t, size_t nodenr, double value) {
@@ -329,6 +520,92 @@ double Herss::GetReservoirLevel_fr(size_t node_idnr, size_t t) {
     return rs->nodes[node_idnr]->S->res_fr[t];
 }
 /////////////////////////////////////////////////////////////////////
+// Calculate the water value in the system at a specific timestep
+// Note that we can calculate the watervalue at the beginning of a timestep or at the end 
+// In this function we calculate the watervalue at the END of the timestep.
+double Herss::CalcWaterValue_atEndofStp(size_t t) {
+
+
+    // printf("################  CalcWaterValue    t= %lu #################################\n", t );
+    if(gc->nr_reservoirs > 1) {
+        LOG_ERR("ERROR:  This function is not implemented yet");
+    }
+
+    double deltaR = 0.005;
+
+    // First we simulate the whole timeseries
+    Simulate();
+
+    rs->CalcVF(rs->nodes[0]->S->restprice);
+    
+    // printf("ValueFunction at start of timestep 0 t=0 = %.4f\n", myValueFunc0);
+
+    rs->ValueFunction[t]  = rs->CalcVF_atEndOfStp(rs->nodes[0]->S->restprice, t);
+
+    double vf0 = rs->ValueFunction[t];
+    
+    //printf("ValueFunction at end of timestep 0 t=0 = %.4f\n", rs->ValueFunction[t]);
+    //printf("sum_total_MWh               = %.2f \n", rs->sum_total_MWh);
+    //printf("sum_production              = %.2f \n", rs->sum_production);
+    //printf("tot_remaining_available_MWh = %.2f \n", rs->tot_remaining_available_MWh);
+
+
+    // Now we find sum production + remaining energy in the system from start time to end of the current timestep t 
+    // We do this by summing up production from start to end of current stp. 
+    // We subtract this from sum_total_energy 
+    double start_sum_production = 0.0;
+    for(size_t mytime = 0; mytime <= t; mytime++) {
+        for(size_t p = 0; p < gc->nr_pstations; p++) {
+            start_sum_production += rs->pstations[p].S->Power[mytime];
+        }
+    }
+    double E0 = rs->sum_total_MWh - start_sum_production;
+
+    // printf("energy_end_of_stp = %.2f\n", E0);
+
+    double old_inflow = GetInflowInNode(t, 0);
+    double max_res_Mm3 = rs->reservoirs[0].filling_at_hrw_Mm3 - rs->reservoirs[0].filling_at_lrw_Mm3;
+    int current_dt = getDeltaT(t); 
+    double q_m3s = MACRO_Mm3_2_m3s( deltaR * max_res_Mm3, current_dt);
+
+    // We will add so much inflow that we increase the reservoir level by deltaR
+    SetInflowInNode(t, 0, old_inflow + q_m3s);
+    Simulate();
+
+    rs->CalcVF(rs->nodes[0]->S->restprice);
+
+    double myValueFunc1 = rs->CalcVF_atEndOfStp(rs->nodes[0]->S->restprice, t);
+    double vf1 = myValueFunc1;
+
+    // printf("ValueFunction at end of timestep 1 t=1, with deltaR   = %.4f\n", myValueFunc1);
+
+    // Find the energy 
+    start_sum_production = 0.0;
+    for(size_t mytime = 0; mytime <= t; mytime++) {
+        for(size_t p = 0; p < gc->nr_pstations; p++) {
+            start_sum_production += rs->pstations[p].S->Power[mytime];
+        }
+    }
+    double E1 = rs->sum_total_MWh - start_sum_production;
+    // printf("energy_end_of_stp with perturbation in reservoir = %.2f\n", E1);
+
+    // In the last timestep we have can add water to the end reservoir.
+    double watervalue = (vf1 - vf0)/(E1 - E0);
+
+    rs->WaterValue[t]     = watervalue;
+
+    // Reset to old inflow 
+    SetInflowInNode(t, 0, old_inflow);
+    Simulate();
+    rs->CalcVF(rs->nodes[0]->S->restprice);
+    return watervalue;
+
+}  
+/////////////////////////////////////////////////////////////////////
+double Herss::GetValueFunction_atStp(size_t t) {
+    return rs->ValueFunction[t];
+};
+/////////////////////////////////////////////////////////////////////
 int Herss::Simulate() {
 
     //-----------------------------------------------------------------
@@ -343,16 +620,34 @@ int Herss::Simulate() {
     }
 
     for(size_t n = 0; n < gc->nr_nodes; n++) {
-        rs->nodes[n]->remaining_available_Mm3 = 0.0;
-        rs->nodes[n]->upstream_remaining_available_Mm3 = 0.0;
+        rs->nodes[n]->remaining_Mm3 = 0.0;
+        rs->nodes[n]->upstream_remaining_Mm3 = 0.0;
+        rs->nodes[n]->remaining_active_Mm3 = 0.0;
+        rs->nodes[n]->upstream_remaining_active_Mm3 = 0.0;
     }
 
-    // DO NOT CHANGE THIS AROUND - IT EFFECTS THE RESULTS
+    // DO NOT CHANGE THIS AROUND - IT EFFECTS THE RESULTS (OVE CHANGED IT TO HANDLE VARIABLE TIMESTEPS)
     for( size_t t = 0; t < stps; ++t ) {
+        // Set current timestep for ArrayCurve error reporting
+        ArrayCurve::setCurrentTimestep(t);
+
+        // Update the current timestep dt for all scenarios
+        int current_dt = getDeltaT(t);
+
         for(size_t n = 0; n < gc->nr_nodes; n++) {
+
+            rs->nodes[n]->S->dt = current_dt;
+            
+            // Set current node information for ArrayCurve error reporting
+            ArrayCurve::setCurrentNode(rs->nodes[n]->idnr, rs->nodes[n]->nodename);
+
+            //printf("timestep t= %lu   Nodeidnr: %lu, nodename: %s    nodetype %s \n", 
+            //    t, rs->nodes[n]->idnr, rs->nodes[n]->nodename.c_str(), EnumToString(rs->nodes[n]->nodetype) );
+                    
             rs->nodes[n]->Simulate(t);
         }
     }
+
 
     // We need to update the remaining water in the node pointers (up, down)
     // Note that in reservoirs the water below LRW is DEAD.
@@ -361,12 +656,13 @@ int Herss::Simulate() {
     // Available water and total amount of water in the riversystem is not the same. 
     for(size_t n = 0; n < gc->nr_nodes; n++) {
         if(rs->nodes[n]->ptr_downstream_node != NULL) {
-            // We now increase the downstream nodes available water, should have been initialized to zero.
-            rs->nodes[n]->ptr_downstream_node->upstream_remaining_available_Mm3 += 
-                (rs->nodes[n]->remaining_available_Mm3 + rs->nodes[n]->upstream_remaining_available_Mm3);
-                //    local node water                  +   upstream water 
-        }
 
+            // We now increase the downstream nodes available water, should have been initialized to zero.
+            rs->nodes[n]->ptr_downstream_node->upstream_remaining_Mm3          += (rs->nodes[n]->remaining_Mm3         + rs->nodes[n]->upstream_remaining_Mm3);
+            
+            rs->nodes[n]->ptr_downstream_node->upstream_remaining_active_Mm3  += (rs->nodes[n]->remaining_active_Mm3  + rs->nodes[n]->upstream_remaining_active_Mm3);
+
+        }
     }
 
     return 0;
@@ -374,12 +670,12 @@ int Herss::Simulate() {
 /////////////////////////////////////////////////////////////////////
 int Herss::CheckWaterBalance() {
     for(size_t n = 0; n < gc->nr_nodes; n++) {
-        rs->nodes[n]->CheckWaterBalance();
+        rs->nodes[n]->CheckWaterBalance(this);
     }
     return 0;
 }
 /////////////////////////////////////////////////////////////////////
-int Herss::GlobalWaterBalance(Dataset *data){
+int Herss::GlobalWaterBalance(){
     rs->start_water_Mm3 = 0.0;
     rs->end_water_Mm3 = 0.0;
     for(size_t n = 0; n < gc->nr_nodes; n++) {
@@ -390,8 +686,9 @@ int Herss::GlobalWaterBalance(Dataset *data){
     }
     rs->inflow_volume_Mm3 = 0.0;
     for(size_t t=0; t < gc->stps; t++) {
+        int current_dt = getDeltaT(t);  // Use variable timestep
         for(size_t n = 0; n < gc->nr_nodes; n++) {
-            rs->inflow_volume_Mm3 += MACRO_m3s_2_Mm3(data->inflow[t][n] , gc->dt);
+            rs->inflow_volume_Mm3 += MACRO_m3s_2_Mm3( rs->nodes[n]->S->inflow[t], current_dt);
         }
     }
     // How much did leave the Riversystem?
@@ -399,30 +696,29 @@ int Herss::GlobalWaterBalance(Dataset *data){
     rs->outgoing_Mm3 = 0.0;
 
     for(size_t t=0; t < gc->stps; t++) {
-        rs->outgoing_Mm3 += MACRO_m3s_2_Mm3(rs->nodes[gc->nr_nodes-1]->S->tot_outflow[t], gc->dt);
+        int current_dt = getDeltaT(t);  // Use variable timestep
+        rs->outgoing_Mm3 += MACRO_m3s_2_Mm3(rs->nodes[gc->nr_nodes-1]->S->tot_outflow[t], current_dt);
     }
     rs->waterbalance = rs->start_water_Mm3 + rs->inflow_volume_Mm3 - rs->end_water_Mm3 - rs->outgoing_Mm3;
     if(WATERBALANCE_WARNINGS) { 
-        printf("-----------------------------------------\n");
-        printf( "GLOBAL TOTAL WATERBALANCE   (note: Total = available + dead water) \n");
-        printf("start_water_Mm3   = %.6f\n", rs->start_water_Mm3 );
-        printf("inflow_Mm3        = %.6f\n", rs->inflow_volume_Mm3); 
-        printf("outflow_Mm3       = %.6f\n", rs->outgoing_Mm3);
-        printf("remaining_Mm3     = %.6f\n", rs->end_water_Mm3);
-        printf("waterbalance      = %.6f\n", rs->waterbalance);
-        printf("-----------------------------------------\n");
+        LOG_INFO("-----------------------------------------");
+        LOG_INFO( "GLOBAL TOTAL WATERBALANCE   (note: Total = available + dead water) " );
+        LOG_INFO("start_water_Mm3   = " + std::to_string(rs->start_water_Mm3) );
+        LOG_INFO("inflow_Mm3        = " + std::to_string(rs->inflow_volume_Mm3)); 
+        LOG_INFO("outflow_Mm3       = " + std::to_string(rs->outgoing_Mm3));
+        LOG_INFO("remaining_Mm3     = " + std::to_string(rs->end_water_Mm3));
+        LOG_INFO("waterbalance      = " + std::to_string(rs->waterbalance));
+        LOG_INFO("-----------------------------------------");
     }
 
     if(abs(rs->waterbalance) > 0.0001) {
-        printf("-----------------------------------------\n");
-        printf( "GLOBAL WATERBALANCE ERROR \n");
-        printf("start_water_Mm3   = %.6f\n", rs->start_water_Mm3 );
-        printf("inflow_volume_Mm3 = %.6f\n", rs->inflow_volume_Mm3); 
-        printf("outflow_Mm3       = %.6f\n", rs->outgoing_Mm3);
-        printf("remaining_Mm3     = %.6f\n", rs->end_water_Mm3);
-        printf("waterbalance      = %.6f\n", rs->waterbalance);
-        printf("file: %s  linenr: %d  function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-	    exit(EXIT_FAILURE);
+        LOG_WARN("-----------------------------------------");
+        LOG_WARN( "GLOBAL WATERBALANCE ERROR " );
+        LOG_WARN("start_water_Mm3   = " + std::to_string(rs->start_water_Mm3) );
+        LOG_WARN("inflow_volume_Mm3 = " + std::to_string(rs->inflow_volume_Mm3)); 
+        LOG_WARN("outflow_Mm3       = " + std::to_string(rs->outgoing_Mm3));
+        LOG_WARN("remaining_Mm3     = " + std::to_string(rs->end_water_Mm3));
+        LOG_ERR("waterbalance      = " + std::to_string(rs->waterbalance));
     }
     return 0;
 }
@@ -437,7 +733,7 @@ int Herss::WriteNodeOutput(){
 int Herss::CalcAdjustmenCosts() {
     // For each powerstation We loop over all timesteps and check if we break maximum number of adjustemnts pr day.
     for(size_t n = 0; n < gc->nr_nodes; n++) {
-        if(rs->nodes[n]->nodetype == NodeType::POWERSTATION) { 
+        if(rs->nodes[n]->nodetype == NodeType::PSTATION) { 
             if(rs->nodes[n]->max_adjustment_pr_day > 0 ) {
                 rs->adjust_cost = rs->pstations[rs->nodes[n]->pstation_idnr].CalcAdjustmenCosts();
             }
@@ -446,3 +742,20 @@ int Herss::CalcAdjustmenCosts() {
     return 0;
 }
 /////////////////////////////////////////////////////////////////////
+// Get variable timestep for simulation
+int Herss::getDeltaT(size_t timestep) {
+    if (data != nullptr) {
+        return data->getDeltaT(timestep);
+    }
+    LOG_ERR("ERROR: Variable timestep requested but Dataset not available");
+    return -9; // Will likely crash program..... 
+}
+
+void Herss::SetDate(size_t t, int Y, int M, int D, int H) {
+    if(!data) return;              // data is set later via prepaireSimulation
+    if(t >= data->stps) return;
+    data->year[t]  = Y;
+    data->month[t] = M;
+    data->day[t]   = D;
+    data->hour[t]  = H;
+}

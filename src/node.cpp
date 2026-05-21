@@ -42,8 +42,37 @@ Node::Node() {
     start_of_stp_masl        = NOT_INIT;
     end_of_stp_masl          = NOT_INIT;
     qmin_in_use              = false;
-    remaining_available_Mm3  = NOT_INIT;
-    upstream_remaining_available_Mm3 = 0.0; // To make things easier. 
+
+    remaining_Mm3                    = NOT_INIT;
+    upstream_remaining_Mm3           = 0.0; // To make things easier. 
+
+    remaining_active_Mm3                       = NOT_INIT;
+    upstream_remaining_active_Mm3         = 0.0; // To make things easier.
+
+    up_res_Mm3 = NOT_INIT;
+    reservoir_idnr = NOT_INIT;  // Used so we can go from node idnr to reservoir number. 
+
+    pstation_idnr = NOT_INIT; // We use this to index pstations. 
+    max_adjustment_pr_day = NOT_INIT;
+    max_adjustment_cost = NOT_INIT;
+
+    local_energy_equivalent = -1.0 * NOT_INIT;  // kWh/m3
+    powstat_min_discharge = NOT_INIT;  // We must place them here so we can accoes them through node pointer. 
+    auto_qmin = NOT_INIT;
+    start_of_stp_masl = NOT_INIT;
+    end_of_stp_masl = NOT_INIT;
+    
+    downstream_node_in_use = false;
+    outlet_hatch_in_use = false;
+    outlet_tunnel_in_use = false;
+    outlet_overflow_in_use = false;
+    outlet_auto_qmin_in_use = false;
+
+    downstream_idnr = NOT_INIT; // Used to keep track of remaining water volumes. 
+    downstream_idnr_tunnel = NOT_INIT;
+    downstream_idnr_hatch = NOT_INIT;
+    downstream_idnr_overflow = NOT_INIT;
+    downstream_idnr_auto_qmin = NOT_INIT;
 
     ptr_downstream_node           = NULL;
     ptr_downstream_node_tunnel    = NULL;
@@ -59,7 +88,7 @@ int Node::ReadNodeData(string filename)             { return 0; }
 int Node::ReadStateFile(string filename)            { return 0; }
 int Node::Simulate(size_t t)                        { return 0; }
 int Node::initArrayCurves(void)                     { return 0; }
-int Node::CheckWaterBalance(void)                   { return 0; }
+int Node::CheckWaterBalance(Herss *herss_obj)       { return 0; }
 double Node::GetStartWater_Mm3(void)                { return 0; }
 double Node::GetEndWater_Mm3(void)                  { return 0; } 
 int Node::WriteNodeOutput(GlobalConfig *gc )        { return 0; }

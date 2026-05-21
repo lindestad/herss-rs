@@ -56,7 +56,10 @@ Scenario::Scenario(size_t stps, size_t dt, size_t idnr){
 
     try {
         price           = new double[stps];
-        action          = new double[stps];
+        action = new double*[stps];
+        for (size_t t = 0; t < stps; ++t) {
+            action[t] = new double[MAX_NR_NODES]; 
+        }
         q_action        = new double[stps];
         inflow          = new double[stps];
         tot_outflow     = new double[stps];
@@ -64,6 +67,8 @@ Scenario::Scenario(size_t stps, size_t dt, size_t idnr){
         local_inflow    = new double[stps];
         up_inflow       = new double[stps];
         res_Mm3         = new double[stps];
+        res_active_Mm3 = new double[stps];
+
         res_masl        = new double[stps];
         res_fr          = new double[stps];
         profit          = new double[stps];
@@ -77,6 +82,7 @@ Scenario::Scenario(size_t stps, size_t dt, size_t idnr){
         Hbrutto         = new double[stps];
         Hnetto          = new double[stps];
         Power           = new double[stps];
+        EstimatedEEKV   = new double[stps];
 
         tunnelflow_m3s  = new double[stps];
         hatchflow_m3s   = new double[stps];
@@ -99,7 +105,9 @@ Scenario::Scenario(size_t stps, size_t dt, size_t idnr){
 
     for(size_t t = 0; t < this->stps; t++) {
         price[t]           = NOT_INIT;
-        action[t]          = NOT_INIT;
+        for (size_t n = 0; n < MAX_NR_NODES; ++n) {
+            action[t][n] = NOT_INIT;
+        }
         q_action[t]        = NOT_INIT;
         inflow[t]          = 0.0;     // To make things easy and faster 
         tot_outflow[t]     = NOT_INIT;
@@ -107,6 +115,7 @@ Scenario::Scenario(size_t stps, size_t dt, size_t idnr){
         local_inflow[t]    = NOT_INIT;
         up_inflow[t]       = 0.0;        // To make things easy and faster 
         res_Mm3[t]         = NOT_INIT;
+        res_active_Mm3[t]  = NOT_INIT;
         res_masl[t]        = NOT_INIT;
         res_fr[t]          = NOT_INIT;
         profit[t]          = NOT_INIT;
@@ -127,6 +136,8 @@ Scenario::Scenario(size_t stps, size_t dt, size_t idnr){
         qmin_flag[t]       = NOT_INIT;
         adjust_cost[t]     = 0.0;
 
+        EstimatedEEKV[t]   = NOT_INIT;
+
         tunnelflow_m3s[t]  = NOT_INIT;
         hatchflow_m3s[t]   = NOT_INIT;
         overflow_m3s[t]    = NOT_INIT;
@@ -138,7 +149,9 @@ Scenario::Scenario(size_t stps, size_t dt, size_t idnr){
 Scenario::~Scenario(){
 
     delete [] price;
-    delete [] action;
+    for (size_t t = 0; t < stps; ++t) {
+        delete[] action[t];
+    }
     delete [] q_action;
     delete [] inflow;
     delete [] tot_outflow;
@@ -146,6 +159,7 @@ Scenario::~Scenario(){
     delete [] local_inflow;
     delete [] up_inflow;
     delete [] res_Mm3;
+    delete [] res_active_Mm3;
     delete [] res_masl;
     delete [] res_fr;
     delete [] profit;

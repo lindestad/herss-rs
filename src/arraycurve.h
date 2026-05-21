@@ -30,6 +30,9 @@ SOFTWARE.
 #ifndef __ARRAYCURVE_h__
 #define __ARRAYCURVE_h__
 
+#include <cstddef>  // For size_t
+#include <string>   // For std::string
+
 #define POINTS_IN_ARRAY 1000
 //---------------------------------------------
 // The idea here is that we want to make a super fast calculation of Y from a curve
@@ -41,12 +44,12 @@ SOFTWARE.
 // We discretisize the x axes into small steps. For each of these we point to the lower and upper (nearest values of Y and X. )
 // The trick is to normalize both axis to values between zero and one.
 // WORK IN PROGRESS, BVM Feb 2024. 
-
 class ArrayCurve {
 
 public:
 	ArrayCurve();
 	~ArrayCurve();
+
 
 	double xmin, xmax;
 	double ymin, ymax;
@@ -59,6 +62,8 @@ public:
 	double ylower[POINTS_IN_ARRAY];
 	double initializeArrays();
 	double x2y(double x);  // We use this to get y from x for the curve that was used to initialize.
+	static void setCurrentTimestep(size_t timestep);  // Static function to set current timestep for error reporting
+	static void setCurrentNode(size_t idnr, const std::string& nodename);  // Static function to set current node for error reporting
 };
 
 #endif

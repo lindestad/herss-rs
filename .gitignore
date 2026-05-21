@@ -11,3 +11,16 @@
 build/
 bin/
 obj/
+
+# LaTeX tmp files
+*.aux
+*.log
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+
+
+

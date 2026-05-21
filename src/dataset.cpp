@@ -1,30 +1,11 @@
 /********************************************************************************
 Project:      The Hydraulic Economic River System Simulator (HERSS)
 Filename:     dataset.cpp
-Developer:    Bernt Viggo Matheussen (Bernt.Viggo.Matheussen@aenergi.no)
+Developers:   Bernt Viggo Matheussen, Ove Arstad
 Organization: Å Energi, www.ae.no
 
-This software is released under the MIT license:
+This software is released under the MIT license.
 
-Copyright (c) <2024> <Å Energi, Bernt Viggo Matheussen>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ********************************************************************************/
 
 #include "herss.h"
@@ -46,9 +27,7 @@ Dataset::Dataset(GlobalConfig *gc){
         }
     }
     catch(std::bad_alloc& exc) { 
-        printf("Error: memory allocation failed. \n"); 
-        printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-        exit(EXIT_FAILURE);
+        LOG_ERR("Error: memory allocation failed."); 
     }
 
     for(size_t t = 0; t < stps;  t++) {
@@ -66,9 +45,7 @@ Dataset::Dataset(GlobalConfig *gc){
         hour    = new int[stps];
     }
     catch(std::bad_alloc& exc) { 
-        printf("Error: memory allocation failed. \n"); 
-        printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-        exit(EXIT_FAILURE);
+        LOG_ERR("Error: memory allocation failed."); 
     }
     this->restprice = NOT_INIT;
     for(size_t t = 0; t < stps; t++) {
@@ -78,10 +55,6 @@ Dataset::Dataset(GlobalConfig *gc){
         day[t]   = NOT_INIT;
         hour[t]  = NOT_INIT;
     }
-
-    readPricefile();
-    readInflowFile();
-    readActionsFile();
 
 }
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -97,86 +70,202 @@ Dataset::~Dataset(){
     delete [] month;
     delete [] day;
     delete [] hour;
-
     this->gc = NULL;
 
 }
 /////////////////////////////////////////////////////////////////////////////////////////
+// CHANGE BY OVE: Calculate epochs and delta_t for each timestep.
+// BVM May 2026. 
+// We do not use DT or DT_LAST anymore.
+// DT are calculated from the dates in the price file. This allows for variable time steps.
+// We set DT in the last timestep to be the same as in the timestep before.
+
+void Dataset::multi_temporal_resolution() {
+
+    std::vector<time_t> epochs(stps);
+    
+    DateTime dt;
+    
+    for (size_t t = 0; t < stps; ++t) {
+        dt.setDate(year[t], month[t], day[t], hour[t], 0, 0); 
+        epochs[t] = dt.getEpoch();
+    }
+    
+    delta_t.clear();
+    for (size_t t = 1; t < stps; ++t) {
+        delta_t.push_back(static_cast<int>(epochs[t] - epochs[t-1]));
+    }
+
+    // Add the last timestep with the same delta_t as the previous one
+    delta_t.push_back(static_cast<int>(epochs[stps-1] - epochs[stps-2]));
+
+    //for (size_t t = 0; t < stps; ++t) {         cout << "t= " << t << " " << delta_t[t] << endl;     }
+
+
+}
+/////////////////////////////////////////////////////////////////////////////////////////
+// CHANGE BY OVE: Get delta_t for a specific timestep
+// If the timestep is the last one, we return gc->dt_last
+
+// BVM May 2026, found a minor bug. 
+// If the user didnt specify the dt_last in the config file, it failed. 
+// I am not sure why,
+// We have set dt in the last timestep to be the same as in the second last step.
+// In this way the user can run the model without specifying dt, or dt_last.
+
+// Old code 
+// int Dataset::getDeltaT(size_t timestep) {
+//     if (timestep < stps - 1) {
+//         return delta_t[timestep]; 
+//     }
+//     if (timestep == stps - 1 && !delta_t.empty()) {
+//         if (gc->dt_last > 0) {
+//             return gc->dt_last;
+//         }
+//         printf("Error: Not set LAST_DT in global config?\n"); 
+//         exit(EXIT_FAILURE);
+//     }
+//     std::cerr << "Error: timestep out of bounds in getDeltaT: " << timestep << std::endl;
+//     exit(EXIT_FAILURE);
+// }
+
+int Dataset::getDeltaT(size_t timestep) {
+    if (timestep < stps && !delta_t.empty() && timestep >= 0) {
+        return delta_t[timestep]; 
+    }
+    std::cerr << "Error: timestep out of bounds in getDeltaT: " << timestep << std::endl;
+    printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
+    exit(EXIT_FAILURE);
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+void Dataset::readAllData() {
+    readPricefile();
+    readInflowFile();
+    readActionsFile();
+    multi_temporal_resolution();
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////
 void Dataset::readActionsFile() {
 
-	ifstream myfile;
-	string line;
+    Xtime xtime;
+    ifstream myfile;
+    string line;
     string keyword;
     string value;
     Line line_obj;
-    int idnrs[MAX_NR_NODES];  // We save the idnrs given in the first line in the inputfile. 
 
-	myfile.open(gc->actionsfile.c_str() );
-	if (!myfile.is_open()) 	{
-		cout << "The actionsfile " << gc->actionsfile << " could not be found/opened. \n";
-        printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		exit(EXIT_FAILURE);
-	}
+
+    // CHANGE BY OVE: Enable reading of multiple generators in the 
+    // actions file (ex. 1_0 for generator 0 in node 1, 1_1 for generator 1 in node 1)
+    
+    // Modified by BVM, May 2026. 
+    
+
+    std::vector<std::string> colnames;  
+
+    myfile.open(gc->actionsfile.c_str() );
+    if (!myfile.is_open()) 	{
+        LOG_ERR("The actionsfile " + gc->actionsfile + " could not be found/opened");
+    }   
+
+    // The actions can be hatch release from reservoirs or powerproduction at powerstations (multi-generator). 
 
     size_t active_nodes = 0;
 
     getline(myfile, line);
     if( line.length()  > 0 && ( line[0] != '#') ) {
-        
+
         keyword = line_obj.extractNextElementFromLine(&line);
         if (!keyword.compare("Date_NodeID") == 0) {
-		    cout << "There is an error in the actionsfile file " << gc->actionsfile << " please revisit input\n";
-            printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		    exit(EXIT_FAILURE);
+            LOG_ERR("There is an error (missing Date_NodeID) in the actionsfile file " + gc->actionsfile + " please revisit input");
         }
         string tmpline = line;
         active_nodes = line_obj.calcNrCols(&tmpline);
-        // Now we read in the idnrs for each coloumn and save it. 
+
+        if(active_nodes != gc->n_action_nodes_from_topology) {
+            LOG_INFO("Number of action nodes in the actionsfile " + gc->actionsfile + " does not match number of action nodes in the topology file " + gc->topologyfile);
+            LOG_INFO("Please revisit input");
+            LOG_WARN("Number of action nodes in the actionsfile " + gc->actionsfile + " does not match number of action nodes in the topology file " + gc->topologyfile);
+            LOG_WARN("Number of action nodes in the actionsfile: " + std::to_string(active_nodes));
+            LOG_WARN("Number of action nodes in the topology file: " + std::to_string(gc->n_action_nodes_from_topology));
+            LOG_ERR("Please revisit input");
+        }
+
+
+        // Read in the generator names for each column and save them
         for(size_t c = 0; c < active_nodes; c++) {
             value = line_obj.extractNextElementFromLine(&line);
-            idnrs[c] = stoi(value);
+            colnames.push_back(value); // Store "1_0", "1_1", etc.
         }
-    }
+    }   
 
-    // Now we read in each line with date in the first coloumn and then the data
+    // Read each line with date in the first column and then the data
     for(size_t t = 0; t < this->stps; t++) {
         getline(myfile, line);
         keyword = line_obj.extractNextElementFromLine(&line);
+
+        if( !xtime.setDate(keyword) ) {
+            LOG_ERR("ERROR: Date format is not valid in actionsfile: " + gc->actionsfile + ", please revisit input");
+        }
+
+        int actions_year = xtime.getYear(); 
+        int actions_month = xtime.getMonth();
+        int actions_day = xtime.getDay();
+        int actions_hour = xtime.getHour();
+
+        if(actions_year != year[t] || actions_month != month[t] || actions_day != day[t] || actions_hour != hour[t]) {
+            LOG_ERR("ERROR: Date mismatch in actionfile at timestep " + to_string(t) + " between price and actions files.\n");
+        }
+
         for(size_t c = 0; c < active_nodes; c++) {
             value = line_obj.extractNextElementFromLine(&line);
-            action[t][idnrs[c]]  = stof(value);
+            action[t][c]  = stof(value);
         }
     }
     myfile.close();
+    this->action_colnames = colnames;
 }
 /////////////////////////////////////////////////////////////////////////////////////////
 void Dataset::readInflowFile() {
-	ifstream myfile;
-	string line;
+    
+    Xtime xtime;
+    ifstream myfile;
+    string line;
     string keyword;
     string value;
     Line line_obj;
     int idnrs[MAX_NR_NODES];  // We save the idnrs given in the first line in the inputfile. 
 
-	myfile.open(gc->inflowfile.c_str() );
-	if (!myfile.is_open()) 	{
-		cout << "The inflowfile " << gc->inflowfile << " could not be found/opened. \n";
-        printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		exit(EXIT_FAILURE);
-	}
+
+    // The number of columns should be the same as number of reservoirs + 1 (the date column). 
+
+    myfile.open(gc->inflowfile.c_str() );
+    if (!myfile.is_open()) 	{
+        LOG_ERR("The inflowfile " + gc->inflowfile + " could not be found/opened.");
+    }
 
     size_t active_nodes = 0;
-
     getline(myfile, line);
+
     if( line.length()  > 0 && ( line[0] != '#') ) {
         keyword = line_obj.extractNextElementFromLine(&line);
         if (!keyword.compare("Date_NodeID") == 0) {
-		    cout << "There is an error in the inflowseries file " << gc->inflowfile << " please revisit input\n";
-            printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		    exit(EXIT_FAILURE);
+            LOG_ERR("There is an error (missing Date_NodeID) in the inflowseries file " + gc->inflowfile + " please revisit input");
         }
         string tmpline = line;
         active_nodes = line_obj.calcNrCols(&tmpline);
+
+        // We have scipped the first column already 
+        if(active_nodes != (gc->nr_reservoirs)) {
+            LOG_INFO("There is an error in the inflowfile " + gc->inflowfile);
+            LOG_INFO("Please revisit input. ");
+            LOG_INFO("Number of columns should be number of reservoirs + 1 (date column).");
+            LOG_ERR("There is an error in the inflowfile " + gc->inflowfile + " please revisit input. Number of columns should be number of reservoirs + 1 (date column).");
+        }
+
         // Now we read in the idnrs for each coloumn and save it. 
         for(size_t c = 0; c < active_nodes; c++) {
             value = line_obj.extractNextElementFromLine(&line);
@@ -184,35 +273,57 @@ void Dataset::readInflowFile() {
         }
     }
 
-    // Now we read in each line with date in the first coloumn and then the data
+
+    // Now we read in each line with date in the first column and then the data, and parse the date
     for(size_t t = 0; t < this->stps; t++) {
         getline(myfile, line);
+        string str_line = line;
+        size_t n_cols = line_obj.calcNrCols(&str_line);
+
+        if(n_cols != (active_nodes+1)) {
+            LOG_ERR("There is something wrong with the inflowfile: " + gc->inflowfile + ". Please check number of columns.");
+        }
+
         keyword = line_obj.extractNextElementFromLine(&line);
         for(size_t c = 0; c < active_nodes; c++) {
             value = line_obj.extractNextElementFromLine(&line);
             inflow[t][idnrs[c]]  = stof(value);
+        }        
+            
+        if( !xtime.setDate(keyword) ) {
+            LOG_ERR("Date format is not valid in inflowfile: " + gc->inflowfile + ", please revisit input");
         }
+
+        int inflow_year = xtime.getYear(); 
+        int inflow_month = xtime.getMonth();
+        int inflow_day = xtime.getDay();
+        int inflow_hour = xtime.getHour();
+
+        if(inflow_year != year[t] || inflow_month != month[t] || inflow_day != day[t] || inflow_hour != hour[t]) {
+            LOG_ERR("ERROR: Date mismatch at timestep " + to_string(t) + " between price and inflow files.\n");
+        }
+
     }
+
     myfile.close();
 
 }
 /////////////////////////////////////////////////////////////////////////////////////////
 void Dataset::readPricefile() {
 
-	ifstream myfile;
-	string line;
+    Xtime xtime;
+    ifstream myfile;
+    string line;
     string keyword;
     string value;
     Line line_obj;
 
-	myfile.open(gc->pricefile.c_str() );
-	if (myfile.is_open()) 	{
+    myfile.open(gc->pricefile.c_str() );
+    if (myfile.is_open()) 	{
         // Do nothing
-	} else {
-		cout << "The file " << gc->pricefile << " could not be found/opened. \n";
-        printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		exit(EXIT_FAILURE);
-	}
+    } else {
+        LOG_ERR("The file " + gc->pricefile + " could not be found/opened.");
+    }
 
     getline(myfile, line);
     if( line.length()  > 0 && ( line[0] != '#') ) {
@@ -221,9 +332,7 @@ void Dataset::readPricefile() {
         if (keyword.compare("RESTPRICE") == 0) {
             this->restprice = stof(value);
         } else {
-		    cout << "There is an error in the pricefile " << gc->pricefile << " please revisit input\n";
-            printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		    exit(EXIT_FAILURE);
+            LOG_ERR("There is an error in the pricefile " + gc->pricefile + " please revisit input");
         }
     }
 
@@ -232,9 +341,7 @@ void Dataset::readPricefile() {
         keyword = line_obj.extractNextElementFromLine(&line);
         value   = line_obj.extractNextElementFromLine(&line);
         if (!keyword.compare("Date") == 0) {
-		    cout << "There is an error in the pricefile " << gc->pricefile << " please revisit input\n";
-            printf("file: %s  linenr: %d   function: %s \n", __FILE__ , __LINE__, __FUNCTION__);
-		    exit(EXIT_FAILURE);
+            LOG_ERR("There is an error in the pricefile " + gc->pricefile + " please revisit input");
         }
     }
 
@@ -245,18 +352,18 @@ void Dataset::readPricefile() {
         value   = line_obj.extractNextElementFromLine(&line);
 
         // Check date format
-        if(keyword.length() != 10) {
-		    cout << "ERROR: Date format is not YYYYMMDDHH there is something wrong with pricefile: " << gc->pricefile << ", please revisit input\n";
-            printf("file: %s  linenr: %d  function %s \n", __FILE__ , __LINE__, __FUNCTION__ );
-		    exit(EXIT_FAILURE);
+        if( !xtime.setDate(keyword) ) {
+            LOG_ERR("Date format is not valid in pricefile: " + gc->pricefile + ", please revisit input");
         }
 
-        year[t]  = stoi(keyword.substr (0,4));
-        month[t] = stoi(keyword.substr (4,2));
-        day[t]   = stoi(keyword.substr (6,2));
-        hour[t]  = stoi(keyword.substr (8,2));
+        year[t]  = xtime.getYear();
+        month[t] = xtime.getMonth();
+        day[t]   = xtime.getDay();
+        hour[t]  = xtime.getHour();
         price[t] = stof(value);
+
     }
     myfile.close();
+    
 }
 /////////////////////////////////////////////////////////////////////////////////////////

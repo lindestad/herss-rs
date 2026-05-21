@@ -39,13 +39,17 @@ SOFTWARE.
 #include <sstream>
 #include <map>
 #include "arraycurve.h"
+#include "logger.h"
+
 #include <time.h>
+#include <vector> 
 
 using namespace std;
 
-// Version number.
-#define VERSION 005
-#define VERSION_DATE 20241014
+
+// BVM May 2026, we start using the version convention MAJOR.MINOR.PATCH
+const string VERSION = "3.0.01";
+const string VERSION_DATE = "20260501";
 
 // Maximum number of nodes allowed. // to save coding
 #define MAX_NR_NODES 30
@@ -53,7 +57,7 @@ using namespace std;
 #define MAX_WORDS 200
 
 // To make initialisation of array easier. 
-#define MAX_TRAVELTIME_HOURS 200
+#define MAX_TRAVELTIME_HOURS 240
 
 // Maximum number of points in a point curve
 #define MAX_NR_POINTS_CURVE 50
@@ -64,13 +68,22 @@ using namespace std;
 // Average Earth gravity
 #define GRAVITY 9.80665
 
+#define MOUNT_EVEREST_MASL 8848.0
+
 const string DELIMITER = " \n\t";
 const string NUMERIC = "0123456789.-";
 
-#define NOT_INIT 99999
+#define NOT_INIT 9999999
 #define STR_NOT_INIT "ERROR_STR_NOT_INIT"
 
-#define HERSS_DEBUG_ALL 1
+
+// #include <limits> std::numeric_limits<double>::max();
+// More practical number to use in the code.
+#define VERY_LARGE_NUMBER 999999999
+
+const std::string DEFAULT_STRING_INIT = "ERROR_STR_NOT_INIT";
+
+#define HERSS_DEBUG_ALL false
 
 #define MAX_NUMBER_OF_QMIN_PERIODS 5
 
@@ -79,6 +92,11 @@ const string NUMERIC = "0123456789.-";
 
 // Turn on and off warnings related to check of economy in the system
 #define ECONOMY_WARNINGS false
+
+// Maximum nr of generators in a powerstation
+#define MAX_NR_GENERATORS 6
+
+#define MAX_NR_CASCADED_RESERVOIRS 10
 
 
 /////////////////////////////////////////////////////////////////
@@ -97,24 +115,29 @@ const string NUMERIC = "0123456789.-";
 #endif
 
 
+// This is the naming convention that needs to be used inside the topolgy file 
+// In earlyer version we used POWERSTATION, this has now changed to PSTATION 
+// We make it more consistent with class names. 
 enum NodeType
 {
    RESERVOIR,
-   POWERSTATION,
+   PSTATION,
    CHANNEL
 };
 
+const size_t NODE_TYPE_COUNT = 3;
 
 inline const char* EnumToString(NodeType v)
 {
     switch (v)
     {
         case RESERVOIR:   return "RESERVOIR";
-        case POWERSTATION:   return "POWERSTATION";
+        case PSTATION:   return "PSTATION";
         case CHANNEL: return "CHANNEL";
     }
     return "VOID";
 }
+//---------------------------------------------------------------------------
 
 //---------------------------------------------------------------------------
 // Forward declarations to make all classes visible before they are defined
@@ -122,7 +145,75 @@ class Scenario;
 class GlobalConfig;
 class Channel;
 class SystemState;
+class Herss;
+
+class CascadedReservoirs;
+
+
 //-----------------------------------------------------------------------
+class TopologyParser {
+
+private:
+    std::vector<std::string> lines;
+    size_t currentLine = 0;
+    std::string trim(const std::string& str);
+    
+public:
+
+    bool loadFile(const std::string& filename);
+    size_t getLineCount() const { return lines.size(); }
+
+    std::string getLine(size_t index) {
+        if (index < lines.size()) {
+            return lines[index];
+        } else {
+            throw std::out_of_range("Index out of range in TopologyParser::getLine");
+        }
+    }
+};
+//----------------------------------------------------------
+
+    // We accept the following formats:
+    // Supported date formats
+    // yyyy-mm-dd
+    // yyyy-mm-dd-hh
+    // yyyymmdd
+    // yyyymmddhh
+
+class Xtime {
+public:
+    Xtime();
+    ~Xtime();
+    static bool isValid(std::string &);
+    static void getNowString(std::string &);
+    
+	bool setDate(string str_date);  // Returns true if date format is OK. 
+	void getDateString(char *str_buffer); 
+    string returnDateString();
+    void setDate(int yyyy, int mm, int day, int hour, int min, int sec);
+	void printDate();
+    int changeDate(int dt);
+    int getYear();
+    int getMonth();
+    int getDay();
+    int getHour();
+    int getMin();
+    int getSec();
+    int getJulianDay();
+    time_t getEpoch();
+    int dateDiff(Xtime *, int);
+    void print(FILE *f, char *format);   // Write the current time to file descriptor f on given format
+    string currentDateTime();
+	bool isValid(int, int, int, int, int, int);
+
+private:
+    struct tm my_tm;
+    time_t epoch;       /* Essentialy a pointer to an integer value holding EPOCH seconds.
+                            After 2038 this may be a problem. */
+    
+    static int isLeapYear(int);
+};
+//----------------------------------------------------------
 
 // Simple time class
 // See Kernighan and Ritchie page 298, ISBN 82-518-2705-1, Norwegian edition. 
@@ -143,6 +234,7 @@ public:
         gmtime_r(&epoch, &mytm);
     }
     time_t getEpoch(){ return epoch;};
+
 private:
     struct tm mytm;
     time_t epoch;       // Essentialy a pointer to an integer value holding EPOCH seconds. After 2038 this may be a problem. 
@@ -158,7 +250,7 @@ private:
 // Mm3      Million kubic meters
 // m3s      square meters pr second
 // MW       Mega Watt
-// fr       fraction, usually between zero and one. [0,1], byt may be slightly above 1 or under 0.
+// fr       fraction, usually between zero and one. [0,1], but may be slightly above 1 or under 0.
 //////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -177,7 +269,9 @@ class GlobalConfig {
 public:
     GlobalConfig();       
     ~GlobalConfig();
+
     NodeType nodetypes[MAX_NR_NODES];  // We keep track of which nodetype each index 0,1,2,3 etc is. 
+
     string globalfile;
     string topologyfile;
     string actionsfile;
@@ -190,6 +284,8 @@ public:
     string outputdir;
     string inputdir;
 
+    TopologyParser topoparser;
+
     bool found_topologyfilename;
     bool found_actionsfilename;
     bool found_pricefilename;
@@ -200,18 +296,29 @@ public:
     bool found_dt;
     bool write_nodefiles;
 
+    bool printglobalinfo; 
+    bool printeconomicinfo;
+
+    string logfilename;
     size_t nr_nodes;
     size_t nr_pstations;
     size_t nr_reservoirs;
     size_t nr_channels;
     size_t dt;     // Delta time step in seconds
     size_t stps;   // Nr of time steps in the simulation
+    size_t dt_last; 
 
     double discount_rate;  // DISCOUNT_RATE 0.05
     double discount_factor;
 
     size_t actions_idnrs[MAX_NR_NODES];  // We save the idnrs pointing to nodes with actions (actions inputfile). 
     size_t n_action_nodes;  // Number of nodes were we need to set actions. Could be at PSTATION or RESERVOIRS (hatch_release) 
+
+    // Number of nodes were we need to set actions. 
+    // Could be at PSTATION or RESERVOIRS (hatch_release) 
+    // We calculate this from the topology file and compare it when reading actions. 
+    size_t n_action_nodes_from_topology;
+
     size_t inflows_idnrs[MAX_NR_NODES];  // We save the idnrs pointing to nodes with inflows 
     size_t n_inflow_nodes;  // Number of nodes were we need to set the inflow (RESERVOIRS) 
 
@@ -220,6 +327,8 @@ public:
     void SetDirectoriesAndFilenames();
     void printGlobalInfo();
     void Diagnose();
+    void DiagnoseTopologyFile(); 
+
     void checkNrSteps();  // Checks number of timesteps in the pricefile
 };
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -230,7 +339,6 @@ public:
     size_t stps;               // Number of timesteps used.
     size_t nr_nodes;           // We allocate one inflow and action series pr node. Not used in all of them , but makes it easyer.  
     GlobalConfig *gc; 
-
     double *price;          // We assume all nodes located in same price area. So we need only one price series. 
     double restprice;
     double **inflow;        // One series for each node. We can point to these series from othe robjects.
@@ -243,17 +351,21 @@ public:
     map<int, string> idx2datestring; // Map between index and a date string yyyymmdd.
     string str_startdate;                            // Startdate of data
     string str_enddate;                              // End date of data
-
+    std::vector<std::string> action_colnames;  
+    std::vector<int> delta_t; 
+    
     void readPricefile();
     void readInflowFile();
     void readActionsFile();
-
+    void readAllData();
+    void multi_temporal_resolution();
+    int getDeltaT(size_t timestep);  // Get delta_t for a specific timestep
 };
 ///////////////////////////////////////////////////////////////////////////////////////////
 class Scenario {
 
 public:
-	Scenario();
+    Scenario();
     Scenario(size_t stps, size_t dt, size_t idnr);
     ~Scenario();
 
@@ -281,7 +393,7 @@ public:
 
     // Arrays
     double *price;
-    double *action;
+    double **action;
     double *q_action;
     double *inflow;
     double *tot_outflow;
@@ -294,9 +406,10 @@ public:
     double *auto_qmin_m3s;
     double *channel_storage_Mm3;
 
-    double *res_Mm3;        // Reservoir filling in Mm3
-    double *res_masl;       // Reservoir filling in meters above sea level (masl)
-    double *res_fr;         // Reservoir filling as a fraction of full
+    double *res_Mm3;          // Reservoir filling in Mm3
+    double *res_active_Mm3;   //  Reservoir filling [Mm3] minus filling at LRW 
+    double *res_masl;         // Reservoir filling in meters above sea level (masl)
+    double *res_fr;           // Reservoir filling as a fraction of full
     double *profit;
     double *overflow_Mm3;
     double *income;
@@ -310,6 +423,8 @@ public:
     double *Hbrutto;  // Hydraulic head brutto
     double *Hnetto;  // Hydraulic head netto
     double *Power;
+    double *EstimatedEEKV;  // Estimated energy equivalent
+
     int *year;
     int *month;
     int *day;
@@ -339,6 +454,51 @@ class Qmin {
     int nr_periods;
     double calcQminRequirement(int year, int month, int day, double *cost );
 };
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
+// BVM May 2026, new routing model inside the Channel class.
+// We make a routing model that is suited for multi-temporal resolution. 
+// It is based on a series of cascaded linear reservoirs. The number of reservoirs can be set by the user.
+struct ReservoirState {
+    double storage_m3 = 0.0;
+};
+
+struct ReservoirStepResult {
+    double storage_new_m3;
+    double q_out_avg_m3s;
+    double q_out_end_m3s;
+};
+
+//------------------------------------------------------------------------------------------------
+// Class models a series of cascaded reservoirs that will be used in the channel class/routing. 
+class CascadedReservoirs {
+
+  public:
+    CascadedReservoirs(double k_traveltime_hours, size_t num_reservoirs);
+    ~CascadedReservoirs();
+    void setInitialStorage(std::vector<double> initial_storage_Mm3);
+    double route(double q_in_m3s, double dt_seconds);
+
+    double totalStorageM3();
+    double getStorageMm3(size_t idx_linres);
+
+
+  private:
+
+    ReservoirStepResult routeOneReservoir(
+        double storage_old_m3, double q_in_m3s, double k_seconds, double dt_seconds);
+
+    // In each channel the user can choose number of cascaded linear reservoirs
+    std::vector<ReservoirState> linreservoirs;
+    double k_total_seconds;
+    double k_res_seconds; 
+    double k_traveltime_hours;
+    size_t num_reservoirs;
+
+
+};
+//////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////
 class Node {
   public:
@@ -351,9 +511,14 @@ class Node {
 
     Qmin qmin;  // We let all nodes have access to one Qmin object 
     bool qmin_in_use;  // Flag indicatin wether Qmin is used or not. 
+    
     double up_res_Mm3;   // Upstream reservoir volume - used in Powerstation. 
-    double remaining_available_Mm3;
-    double upstream_remaining_available_Mm3; // We accumulate as we go downward. 
+    
+    double remaining_Mm3;   
+    double upstream_remaining_Mm3; // We accumulate as we go downward. 
+    
+    double remaining_active_Mm3;          // Means only water that can be produced 
+    double upstream_remaining_active_Mm3; // We accumulate as we go downward.  Only water that is assumed to available for production. 
 
     size_t reservoir_idnr;  // Used so we can go from node idnr to reservoir number. 
 
@@ -363,7 +528,6 @@ class Node {
 
     double local_energy_equivalent;  // kWh/m3
     double powstat_min_discharge;  // We must place them here so we can accoes them through node pointer. 
-    double powstat_max_discharge;
     double auto_qmin;
     double start_of_stp_masl;
     double end_of_stp_masl;
@@ -392,7 +556,7 @@ class Node {
 
     virtual int Simulate(size_t t);
     virtual int initArrayCurves(void);
-    virtual int CheckWaterBalance(void);
+    virtual int CheckWaterBalance(class Herss *herss_obj); 
     virtual double GetStartWater_Mm3(void);
     virtual double GetEndWater_Mm3(void);
     virtual int WriteNodeOutput(GlobalConfig *gc);  // Write output for each node 
@@ -410,21 +574,30 @@ class Reservoir: public Node {
     ~Reservoir();
     size_t stps;
     size_t dt;
+    GlobalConfig *gc;
+    double floodlevel_penalty;
+    double floodlevel_cost;
 
     double reservoir_init_fr;
     double reservoir_init_masl;
     double reservoir_init_Mm3;
+    double reservoir_init_active_Mm3;  // minus the filling at LRW
+    double active_max_volume_Mm3;  // Filling at HRW minus the filling at LRW 
+
     double res_HRW;             //  Highest regulated water level [masl]
     double filling_at_hrw_Mm3;  // Mm3
-
     double filling_at_hatchlevel;
     double cost_lrw;
     double res_LRW;             //  Lowest regulated water level [masl]
     double filling_at_lrw_Mm3;  // Mm3
     double res_penalty;
     double res_Mm3;             //  Reservoir filling [Mm3]
+
+    bool fast_overflow = false; // If true, we use the fast overflow calculation.
+    
     double res_masl;            //  Reservoir filling [masl]
     double res_fr;              //  Reservoir filling as a fraction of full.
+
     double res_curve_masl[MAX_NR_POINTS_CURVE];
     double res_curve_Mm3[MAX_NR_POINTS_CURVE];
     size_t nr_points_res_curve;
@@ -445,7 +618,8 @@ class Reservoir: public Node {
     int ReadStateFile(string filename);
     int Simulate(size_t t);
     int initArrayCurves(void);
-    int CheckWaterBalance(void);
+    //int CheckWaterBalance(void);
+    int CheckWaterBalance(class Herss *herss_obj);  
     int GetStartWater(void);
     int WriteStateFile(FILE *fp);
 
@@ -456,9 +630,26 @@ class Reservoir: public Node {
     double GetEndWater_Mm3(void);
     int WriteNodeOutput(GlobalConfig *gc);  // Write output for each node 
     double GetTunnelFLow(size_t t); // Used for reservoirs connected to a powerstation. 
+    double GetReservoirFraction(size_t t);
+
+    // We use this to check if the reservoir level is valid.
+    void ValidateReservoirLevelMm3(size_t t, double level_Mm3);
+
+    // We check if the settings for the reservoir are valid. 
+    void ValidateReservoirSettings();  
 
 };
 /////////////////////////////////////////////////////////////////////////////////////////
+// CHANGE BY OVE - Initialize the Generator struct
+struct Generator {
+        std::vector<double> turb_virkn_Q;       // Turbine efficiency curve Q values
+        std::vector<double> turb_virkn_psnt;    // Turbine efficiency curve psnt values
+        ArrayCurve eff_curve; 
+        std::vector<double> action;             // Actions for this generator
+        double headlosscoef;                    // Head loss coefficient for this generator/penstock
+        double max_discharge;                   // Maximum discharge for this generator
+    };
+
 class Powerstation: public Node {
     public:
     Powerstation();
@@ -466,29 +657,37 @@ class Powerstation: public Node {
     size_t stps;
     size_t dt;
     double init_Power;
-
-    // Turbinvirkningsgrad - arrays
-    double turb_virkn_Q[MAX_NR_POINTS_CURVE];
-    double turb_virkn_psnt[MAX_NR_POINTS_CURVE];
-    size_t nr_points_turb_virkn;
-    ArrayCurve ac_turbvirkn_curve;
+    GlobalConfig *gc;
 
     double static_gen_efficiency;
     double headlosscoef;
     double powstat_masl;
     double powstat_startstop;
+    bool shared_penstock;  // CHANGE BY OVE: true = shared penstock, false = separate penstocks
+
+    size_t nr_generators;  // We can get this out of the vector, but its nice to have. 
+    std::vector<Generator> generators; // CHANGE BY OVE: Implemented vectors to hold generators in a powerstation.
+
+    // BVM 15 oct 2024.
+    // In a river runoff powerstation, it is possible to empty the intake in one timestep. 
+    // Since we do not allow this, and we override the action.
+    // We give a marginal penalty so that we see a change in the VF.
+    double aggressive_actions_cost;
 
     int ReadNodeData(string filename);
     int ReadStateFile(string filename);
     int Simulate(size_t t);
-    int initArrayCurves(void);
-    int CheckWaterBalance(void);
+    // int initArrayCurves(void);
+    //int CheckWaterBalance(void);
+    int CheckWaterBalance(class Herss *herss_obj);
     double GetStartWater_Mm3(void);
     double GetEndWater_Mm3(void);
     int WriteNodeOutput(GlobalConfig *gc);  // Write output for each node 
     double GetTunnelFLow(size_t t); 
     int WriteStateFile(FILE *fp);
     double CalcAdjustmenCosts(void); // Only for Powerstation 
+    void ValidatePowerstationSettings();  // We check if the settings for the powerstation are valid. For example, that the number of generators is not higher than the maximum allowed, and that the headloss coefficient is not negative.
+
 };
 /////////////////////////////////////////////////////////////////////////////////////////
 class Channel: public Node {
@@ -497,8 +696,16 @@ class Channel: public Node {
     ~Channel();
     size_t stps;
     size_t dt;
+    GlobalConfig *gc;
 
-    size_t traveltime;
+    CascadedReservoirs *casc_reservoirs;
+    // We use a series of cascaded reservoirs to model the routing in the channel.
+
+    std::vector<double> initial_storage_linres_Mm3; 
+
+    double K_traveltime_hours;  // Travel time in hours, used in the cascaded reservoir routing model.
+    size_t num_cascaded_reservoirs;  // Number of cascaded reservoirs used in the routing model.
+
     double decay;
     double waterflow_m3[MAX_TRAVELTIME_HOURS];  // Keeps track of how much water that is stored in the channel. [m3]
     double init_waterflow_m3[MAX_TRAVELTIME_HOURS];  // Keeps track of how much water that is stored in the channel. [m3]
@@ -507,7 +714,7 @@ class Channel: public Node {
     int ReadStateFile(string filename);
     int Simulate(size_t t);
     int initArrayCurves(void);
-    int CheckWaterBalance(void);
+    int CheckWaterBalance(class Herss *herss_obj);  
     double GetStartWater_Mm3(void);
     double GetEndWater_Mm3(void);
     int WriteNodeOutput(GlobalConfig *gc);  // Write output for each node 
@@ -515,6 +722,7 @@ class Channel: public Node {
     int WriteStateFile(FILE *fp);
     int SetStartState(void);
     void PrintChannelWater(void);
+    void ValidateChannelSettings();  // We check if the settings for the channel are valid. For example, that the travel time is not longer than the maximum allowed.
 
 };
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -530,6 +738,7 @@ public:
     size_t nr_reservoirs;
     size_t nr_pstations;
     size_t nr_channels;
+
     double start_water_Mm3;
     double end_water_Mm3;
     double inflow_volume_Mm3;
@@ -538,11 +747,17 @@ public:
     int nodes_idnrs[MAX_NR_NODES];
     double sum_prod_MWh;
     double sum_total_MWh; // Production pluss remaining in whole riversystem
-    double adjust_cost;   // Adjustment cost 
-    
-    double tot_remaining_available_Mm3;
-    double tot_remaining_available_MWh;
-    double tot_remaining_available_Euro;
+    double adjust_cost;   // Adjustment cost
+
+    // For use in ValueFunction calculations
+    //double effective_remaining_available_Mm3;  // Means only water that can be produced 
+    //double total_effective_remaining_available_Mm3;  // Means only water that can be produced 
+    //double effective_upstream_remaining_available_Mm3; // We accumulate as we go downward.  Only water that is assumed to available for production. 
+
+    double tot_remaining_Mm3;
+    double tot_remaining_MWh;
+    double tot_remaining_Euro;
+    double tot_active_remaining_Mm3;  // Total upstream is included 
     double tot_income_Euro;
     double tot_cost_Euro;
     double tot_profit_Euro;
@@ -553,7 +768,8 @@ public:
     double sum_max_adjustment_cost;
     double sum_lrw_cost;
     double sum_qmin_cost;
-
+    double ValueFunction[500];  // We store the value function for each timestep.
+    double WaterValue[500];  // We store the water value for each timestep.
 
     // Array of Nodes (reservoirs, powerstations, channels)
     Node **nodes;
@@ -562,12 +778,16 @@ public:
     Channel *channels;
     double Simulate(int id);
     double CalcVF(double restprice);
+    double CalcVF_atEndOfStp(double restprice, size_t stp);  // Calculate the value function at a specific timestep
     double CalcSimulationProfit();
     int WriteRiverSystemData(double restprice);
     void WriteReservoirData();
     void PrintReservoirData2Screen();
     int WriteSelectedOutputMatrix();
     double GetEndingReservoirLevel(size_t r_idnr);
+    void PrintEconomicInfo(class Herss *herss_obj);
+    void DiagnoseRiversystemConfiguration();   // RUn some checks to see if the configuration of the riversystem is correct.
+
     
 };
 /////////////////////////////////////////////////////////////////
@@ -577,6 +797,7 @@ public:
     Herss();
     Herss(GlobalConfig *gc);
     GlobalConfig *gc;
+    Dataset *data;  // Store reference to dataset for variable timesteps
     ~Herss();
     size_t dt;          // Delta time step in seconds
     size_t stps;        // How many time steps used in each scenario, and in the optimization step.
@@ -585,16 +806,18 @@ public:
     Scenario  **scen;
 
     int prepaireSimulation(Dataset *data); // Read in final data and set pointers.
+    void SetPointers();
+    void ReadTopologyFile(string filename);
     int Simulate();
     int CheckWaterBalance();
-    int GlobalWaterBalance(Dataset *data);
+    int GlobalWaterBalance();
     int WriteNodeOutput();  // Write output for each node
     int WriteStateFile();  // Write output for each node
     int CalcAdjustmenCosts();
-    
-    void SetAction(size_t node_idnr, size_t t, double value);
-    double GetAction(size_t node_idnr, size_t t);
 
+    void SetAction(size_t node_idnr, size_t gen_idnr, size_t t, double value);
+
+    double GetAction(size_t node_idnr, size_t gen_idnr, size_t t);
     void PrintActions();
     void PrintReservoirLevels_fr();
     void PrintRemainingChannelWater_Mm3();
@@ -602,21 +825,23 @@ public:
     double GetPrice(size_t t);
     void SetPrice(size_t t, double price, double restprice);
     double GetReservoir_Init_fr(size_t idnr);  // Get starting reservoir fraction.
-
     void SetReservoir_Init_fr(size_t idnr, double value);  // Set starting reservoir fraction.
-
-
     double GetReservoirLevel_fr(size_t node_idnr, size_t t);
     void PrintInflowSeries(size_t t);
     void PrintState();
-
     void SetInflowInNode(size_t t, size_t nodenr, double value);
     double GetInflowInNode(size_t t, size_t nodenr);
     void PrintAllInput();
+    double CalcWaterValue_atEndofStp(size_t t);  // Calculate the water value in the system at a specific timestep
+    double GetValueFunction_atStp(size_t t); 
+    void SetDate(size_t t, int Y, int M, int D, int H);
+    int getDeltaT(size_t timestep);  
+    
 };
 /////////////////////////////////////////////////////////////////
 
 
+/////////////////////////////////////////////////////////////////
 
 
 #endif

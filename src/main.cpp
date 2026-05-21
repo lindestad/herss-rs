@@ -5,34 +5,27 @@ Developer:    Bernt Viggo Matheussen (Bernt.Viggo.Matheussen@aenergi.no)
 Organization: Å Energi, www.ae.no
 
 This software is released under the MIT license:
-
 Copyright (c) <2024> <Å Energi, Bernt Viggo Matheussen>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+BVM May 20206 
 ********************************************************************************/
 
 #include "herss.h"
+#include "logger.h"
+
 #include <stdio.h>
 #include <sys/time.h>
 
+
 //////////////////////////////////////////////////////
 int main(int argc, char *argv[]) {
+
+    // Tracking start date and time of the program.
+    Xtime xtime_start;
+
+    string xtime_start_str;
+    xtime_start.getNowString(xtime_start_str);
+
 
     GlobalConfig *gc;
     gc     = new GlobalConfig();
@@ -47,41 +40,112 @@ int main(int argc, char *argv[]) {
         cout << "#################################################################\n";
         exit(EXIT_FAILURE);
     }
+    
+    char logfilename[256];
+    snprintf(logfilename, sizeof(logfilename), "herss_%s_%s.log", VERSION.c_str() , VERSION_DATE.c_str());
+
+    #ifndef HERSS_NO_LOG
+        if (!Logger::instance().init(logfilename)) {
+            std::cerr << "Could not open log file " << logfilename << "\n";
+            std::exit(EXIT_FAILURE);
+        }
+    #endif
+
+    std::chrono::steady_clock::time_point chrono_start;
+    chrono_start = std::chrono::steady_clock::now();
+
+    LOG_INFO("#################################################################");
+    LOG_INFO("# The Hydraulic Economic River System Simulator (HERSS)");
+    LOG_INFO("# VERSION: " + VERSION);
+    LOG_INFO("# VERSION_DATE: " + VERSION_DATE);
+    LOG_INFO("#################################################################");
+
+    // Note that we dont use newline at the end of the log messages, because the logger adds it. 
+    // We can write all logs to screen if needed. 
+    // I turned it off in logger.h. Too much flushing of the screen.
+    
+    LOG_INFO("HERSS started at: " + xtime_start_str);
+    
+    LOG_MSG("HERSS started at: " + xtime_start_str);
+    LOG_MSG("Starting HERSS with global config file: " + string(argv[1]) );
+    LOG_MSG("VERSION: " + VERSION );
+    LOG_MSG("VERSION_DATE: " + VERSION_DATE);
 
     gc->globalfile     = string(argv[1]);
+    
     gc->readGlobalFile();
+
     gc->SetDirectoriesAndFilenames();
     gc->Diagnose();
     gc->checkNrSteps();  // This can be voided if you want to set stps manually before allocation of objects
-    gc->printGlobalInfo();
+
+    
+    if(gc->printglobalinfo) {
+        gc->printGlobalInfo();
+    }
 
     Dataset *data;
     data = new Dataset(gc);
+    data->readAllData(); 
 
     Herss *herss;
     herss = new Herss(gc);
     herss->prepaireSimulation(data);
+
+    // Check that basic variables are initialized and sett within aceptable limits. 
+    herss->rs->DiagnoseRiversystemConfiguration();
+    
+    LOG_MSG("Initialisation looks good. Starting simulation..... ");
     herss->Simulate();
     herss->CheckWaterBalance();
-    herss->GlobalWaterBalance(data);
+    herss->GlobalWaterBalance();
     herss->CalcAdjustmenCosts();
-    printf("ValueFunction = %.5f\n", herss->rs->CalcVF(data->restprice));
     
+    if(gc->printeconomicinfo) {
+        printf("ValueFunction                = %.5f\n",  herss->rs->CalcVF(data->restprice));
+        printf("valuefunction_Euro           = %.3f\n",  herss->rs->valuefunction_Euro);
+        printf("tot_profit_Euro              = %.3f\n",  herss->rs->tot_profit_Euro);
+        printf("tot_remaining_Euro           = %.3f\n",  herss->rs->tot_remaining_Euro);
+        printf("tot_remaining_MWh            = %.4f\n",  herss->rs->tot_remaining_MWh);
+        printf("tot_remaining_Mm3            = %.4f\n",  herss->rs->tot_remaining_Mm3);
+        printf("tot_remaining_active_Mm3     = %.4f\n",  herss->rs->tot_active_remaining_Mm3);  
+        herss->rs->PrintEconomicInfo(herss);
+    }
+
+    //herss->rs->PrintReservoirData2Screen();
+    herss->rs->CalcSimulationProfit();
+    //herss->PrintAllInput(); Uncomment to print all input data
+
     // Now we need to write output to files
     herss->rs->WriteRiverSystemData(data->restprice);
     herss->rs->WriteReservoirData();
     herss->WriteStateFile();
-
     if(gc->write_nodefiles) {
         herss->WriteNodeOutput();
     }  
-
 
     delete herss;
     delete data;
     delete gc;
 
-    printf("THE-END\n");
+
+    // Starttime and runtime of HERSS 
+    std::chrono::steady_clock::time_point chrono_end;
+    chrono_end = std::chrono::steady_clock::now();
+
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(chrono_end - chrono_start).count();
+
+    
+    LOG_INFO("Program runtime (s): " + std::to_string(elapsedMs / 1000.0));
+    LOG_INFO("Program runtime (min): " + std::to_string(elapsedMs / 60000.0));
+    // LOG_INFO("Program runtime (hours): " + std::to_string(elapsedMs / 3600000.0));
+    LOG_INFO("HERSS ended normally - bye!");
+    
+    
+    LOG_MSG("Program runtime (s): " + std::to_string(elapsedMs / 1000.0));
+    LOG_MSG("Program runtime (min): " + std::to_string(elapsedMs / 60000.0));
+    // LOG_MSG("Program runtime (hours): " + std::to_string(elapsedMs / 3600000.0));
+    LOG_MSG("HERSS ended normally - bye!");
 
     return 0;
 }
