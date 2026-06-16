@@ -5,8 +5,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[test]
 fn golden_output_cases_match_references() {
     for case in [
+        "data/mini_utahps_daily",
         "data/mini_utahps_hourly",
         "data/mini_utahps_new_inputformat",
+        "data/res_casc_A",
         "data/res_casc_B",
     ] {
         run_case(case);
