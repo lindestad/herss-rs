@@ -11,6 +11,7 @@
 build/
 bin/
 obj/
+target/
 
 # LaTeX tmp files
 *.aux
@@ -20,7 +21,3 @@ obj/
 *.synctex.gz
 *.fls
 *.fdb_latexmk
-
-
-
-

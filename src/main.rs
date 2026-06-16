@@ -1,0 +1,23 @@
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        println!("#################################################################");
+        println!("# The Hydraulic Economic River System Simulator (HERSS)");
+        println!("# VERSION: {}", herss::VERSION);
+        println!("# VERSION_DATE: {}", herss::VERSION_DATE);
+        println!("# Not correct number of commandline arguments");
+        println!("# USAGE:  herss globalconfigfile.txt ");
+        println!("#################################################################");
+        return ExitCode::FAILURE;
+    }
+
+    match herss::run(&args[1]) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("ERROR: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
