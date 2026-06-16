@@ -1266,7 +1266,7 @@ impl Riversystem {
                 last_hnetto = hnetto;
                 for (g, generator) in powerstation.generators.iter().enumerate() {
                     let q = q_gen[g];
-                    let turbine_efficiency = generator.eff_curve.x2y(q) / 100.0;
+                    let turbine_efficiency = generator_efficiency(generator, q);
                     if turbine_efficiency < 0.0 {
                         return Err(HerssError::new(format!(
                             "Turbine efficiency failed in {}",
@@ -1285,7 +1285,7 @@ impl Riversystem {
                     let headloss = powerstation.headlosscoef * q * q;
                     let hnetto = hbrutto - headloss;
                     last_hnetto = hnetto;
-                    let turbine_efficiency = generator.eff_curve.x2y(q) / 100.0;
+                    let turbine_efficiency = generator_efficiency(generator, q);
                     if turbine_efficiency < 0.0 {
                         return Err(HerssError::new(format!(
                             "Turbine efficiency failed in {}",
@@ -1902,6 +1902,14 @@ impl Node {
             .unwrap();
         }
         Ok(out)
+    }
+}
+
+fn generator_efficiency(generator: &Generator, q: f64) -> f64 {
+    if (q - generator.eff_curve.xmax).abs() < 1e-12 {
+        0.0
+    } else {
+        generator.eff_curve.x2y(q) / 100.0
     }
 }
 
