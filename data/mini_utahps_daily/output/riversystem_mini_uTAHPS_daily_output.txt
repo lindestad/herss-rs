@@ -9,7 +9,7 @@ start_water_Mm3   = 7.036000
 inflow_volume_Mm3 = 12.877920
 outflow_Mm3       = 7.674504
 end_water_Mm3     = 12.239416
-waterbalance      = -0.000000
+waterbalance      = 0.000000
 Note that there might be dead water below LRW in the system
 -------------------------------------------
 Average_price_Euro           = 44.774
@@ -19,12 +19,13 @@ tot_active_remaining_Mm3     = 0.000
 tot_remaining_MWh            = 990.000
 tot_remaining_Euro           = 32670.000
 Sum_Production_MWh           = 1004.487
-tot_income_Euro              = 41259.161
+tot_income_Euro              = 41259.160
 Avg_achieved_price_E_MWh     = 41.075
 sum_qmin_cost_Euro           = 0.000
 sum_lrw_cost_Euro            = 0.000
 sum_startstopcost_Euro       = 3.000
 sum_max_adjustment_cost      = 0.000
+sum_aggressive_actions_cost  = 0.000
 tot_cost_Euro                = 3.000
-tot_profit_Euro              = 41256.161
-valuefunction_Euro           = 73926.161
+tot_profit_Euro              = 41256.160
+valuefunction_Euro           = 73926.160

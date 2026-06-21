@@ -1,7 +1,8 @@
 use crate::error::{HerssError, Result};
 use crate::util::{active_lines, count_cols, parse_bool, parse_optional_i32, raw_lines, tokens};
 use crate::{
-    MAX_NR_GENERATORS, MAX_NR_NODES, MAX_NR_POINTS_CURVE, NOT_INIT_USIZE, VERY_LARGE_NUMBER,
+    MAX_NR_GENERATORS, MAX_NR_NODES, MAX_NR_POINTS_CURVE, N_UNIFORM_EFF_CURVE_POINTS,
+    NOT_INIT_USIZE, VERY_LARGE_NUMBER,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +69,13 @@ pub(crate) struct HatchConfig {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct SpillwayConfig {
+    pub c: f64,
+    pub l: f64,
+    pub level_masl: f64,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ReservoirConfig {
     pub hrw: f64,
     pub lrw: f64,
@@ -81,7 +89,9 @@ pub(crate) struct ReservoirConfig {
     pub bottom_masl: f64,
     pub use_reservoir_curve: bool,
     pub reservoir_curve: Vec<(f64, f64)>,
+    pub use_overflow_curve: bool,
     pub overflow_curve: Vec<(f64, f64)>,
+    pub spillway: Option<SpillwayConfig>,
     pub outlet_hatch: Option<HatchConfig>,
     pub outlet_tunnel: Option<usize>,
     pub outlet_overflow: Option<usize>,
@@ -103,7 +113,9 @@ impl Default for ReservoirConfig {
             bottom_masl: -VERY_LARGE_NUMBER,
             use_reservoir_curve: false,
             reservoir_curve: Vec::new(),
+            use_overflow_curve: false,
             overflow_curve: Vec::new(),
+            spillway: None,
             outlet_hatch: None,
             outlet_tunnel: None,
             outlet_overflow: None,
@@ -115,6 +127,7 @@ impl Default for ReservoirConfig {
 #[derive(Debug, Clone)]
 pub(crate) struct GeneratorConfig {
     pub turbine_curve: Vec<(f64, f64)>,
+    pub uniform_normalized_curve: Option<Vec<f64>>,
     pub max_discharge: f64,
 }
 
@@ -473,6 +486,8 @@ fn parse_reservoir(
 ) -> Result<(ReservoirConfig, usize, usize)> {
     let mut config = ReservoirConfig::default();
     let mut action_count = 0usize;
+    let node_cols = tokens(&lines[start]);
+    let node_id: usize = req_col(&node_cols, 2, &lines[start])?.parse()?;
     let mut idx = start + 1;
 
     while idx < lines.len() {
@@ -492,6 +507,26 @@ fn parse_reservoir(
             "RES_PENALTY" => config.res_penalty = req_col(&cols, 1, &lines[idx])?.parse()?,
             "FLOODLEVEL_PENALTY" => {
                 config.floodlevel_penalty = req_col(&cols, 1, &lines[idx])?.parse()?
+            }
+            "SPILLWAY" => {
+                let downstream: i32 = req_col(&cols, 1, &lines[idx])?.parse()?;
+                if downstream < 0 {
+                    return Err(HerssError::new(format!(
+                        "SPILLWAY downstream node idnr must be non-negative in {filename}"
+                    )));
+                }
+                let downstream = downstream as usize;
+                if downstream == node_id {
+                    return Err(HerssError::new(format!(
+                        "SPILLWAY downstream node idnr cannot point to itself in {filename}"
+                    )));
+                }
+                config.outlet_overflow = Some(downstream);
+                config.spillway = Some(SpillwayConfig {
+                    c: req_col(&cols, 2, &lines[idx])?.parse()?,
+                    l: req_col(&cols, 3, &lines[idx])?.parse()?,
+                    level_masl: req_col(&cols, 4, &lines[idx])?.parse()?,
+                });
             }
             "FAST_OVERFLOW" => {
                 config.fast_overflow = parse_bool(req_col(&cols, 1, &lines[idx])?, "FAST_OVERFLOW")?
@@ -546,7 +581,20 @@ fn parse_reservoir(
                         "nr_points_ovefl_curve > MAX_NR_POINTS_CURVE",
                     ));
                 }
-                config.outlet_overflow = Some(req_col(&cols, 2, &lines[idx])?.parse()?);
+                let downstream: i32 = req_col(&cols, 2, &lines[idx])?.parse()?;
+                if downstream < 0 {
+                    return Err(HerssError::new(format!(
+                        "OVERFLOW_CURVE downstream node idnr must be non-negative in {filename}"
+                    )));
+                }
+                let downstream = downstream as usize;
+                if downstream == node_id {
+                    return Err(HerssError::new(format!(
+                        "OVERFLOW_CURVE downstream node idnr cannot point to itself in {filename}"
+                    )));
+                }
+                config.outlet_overflow = Some(downstream);
+                config.use_overflow_curve = true;
                 config.overflow_curve = parse_point_rows(lines, idx + 1, n_points)?;
                 idx += n_points + 1;
                 continue;
@@ -558,7 +606,12 @@ fn parse_reservoir(
 
     if config.outlet_overflow.is_none() {
         return Err(HerssError::new(format!(
-            "Reservoir in {filename} is missing OVERFLOW_CURVE"
+            "Reservoir in {filename} is missing OVERFLOW_CURVE or SPILLWAY"
+        )));
+    }
+    if config.use_overflow_curve && config.spillway.is_some() {
+        return Err(HerssError::new(format!(
+            "Reservoir in {filename} cannot use both OVERFLOW_CURVE and SPILLWAY"
         )));
     }
     if config.use_reservoir_geometry && config.use_reservoir_curve {
@@ -645,15 +698,38 @@ fn parse_powerstation(
                     let curve_cols = tokens(lines.get(idx).ok_or_else(|| {
                         HerssError::new("Reached end of topology while reading turbine curve")
                     })?);
-                    if curve_cols.first().copied() != Some("TURBINE_CURVE") {
-                        return Err(HerssError::new(format!(
-                            "Expected TURBINE_CURVE for generator {generator_id}"
-                        )));
+                    let mut turbine_curve = Vec::new();
+                    let mut uniform_normalized_curve = None;
+                    match curve_cols.first().copied() {
+                        Some("TURBINE_CURVE") => {
+                            let n_points: usize = req_col(&curve_cols, 1, &lines[idx])?.parse()?;
+                            idx += 1;
+                            turbine_curve = parse_point_rows(lines, idx, n_points)?;
+                            idx += n_points;
+                        }
+                        Some("UNIFORM_NORMALIZED_CURVE") => {
+                            let n_points: usize = req_col(&curve_cols, 1, &lines[idx])?.parse()?;
+                            if n_points != N_UNIFORM_EFF_CURVE_POINTS {
+                                return Err(HerssError::new(format!(
+                                    "Expected {N_UNIFORM_EFF_CURVE_POINTS} points for UNIFORM_NORMALIZED_CURVE for generator {generator_id}"
+                                )));
+                            }
+                            idx += 1;
+                            let points = parse_point_rows(lines, idx, n_points)?;
+                            uniform_normalized_curve = Some(
+                                points
+                                    .into_iter()
+                                    .map(|(_, efficiency)| efficiency)
+                                    .collect(),
+                            );
+                            idx += n_points;
+                        }
+                        _ => {
+                            return Err(HerssError::new(format!(
+                                "Expected TURBINE_CURVE or UNIFORM_NORMALIZED_CURVE for generator {generator_id}"
+                            )));
+                        }
                     }
-                    let n_points: usize = req_col(&curve_cols, 1, &lines[idx])?.parse()?;
-                    idx += 1;
-                    let turbine_curve = parse_point_rows(lines, idx, n_points)?;
-                    idx += n_points;
 
                     let max_cols = tokens(lines.get(idx).ok_or_else(|| {
                         HerssError::new("Reached end of topology while reading generator discharge")
@@ -666,6 +742,7 @@ fn parse_powerstation(
                     let max_discharge = req_col(&max_cols, 1, &lines[idx])?.parse()?;
                     config.generators.push(GeneratorConfig {
                         turbine_curve,
+                        uniform_normalized_curve,
                         max_discharge,
                     });
                     idx += 1;

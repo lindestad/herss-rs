@@ -1,21 +1,21 @@
-Riversystem Res_Casc_B
+Riversystem Res_Casc_D
 Node Idnr Nodename          Nodetype int Nodetypename Remaining_Mm3
 Node  0 YVATN                Nodetype 0  RESERVOIR             14.6336 
 Node  1 SKJE                 Nodetype 2  CHANNEL               0.0000 
-Node  2 HJELLE               Nodetype 0  RESERVOIR             15.8338 
-Node  3 ELV                  Nodetype 2  CHANNEL               0.0098 
+Node  2 HJELLE               Nodetype 0  RESERVOIR             15.7907 
+Node  3 ELV                  Nodetype 2  CHANNEL               0.0237 
 -------------------------------------------
 GLOBAL WATERBALANCE
 start_water_Mm3   = 22.625333
 inflow_volume_Mm3 = 7.869600
-outflow_Mm3       = 0.017718
-end_water_Mm3     = 30.477215
+outflow_Mm3       = 0.046898
+end_water_Mm3     = 30.448036
 waterbalance      = 0.000000
 Note that there might be dead water below LRW in the system
 -------------------------------------------
 Average_price_Euro           = 28.260
 RestPrice_Euro               = 33.000
-tot_remaining_Mm3            = 30.477
+tot_remaining_Mm3            = 30.448
 tot_active_remaining_Mm3     = 0.000
 tot_remaining_MWh            = 0.000
 tot_remaining_Euro           = 0.000

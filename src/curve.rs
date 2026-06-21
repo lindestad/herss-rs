@@ -108,7 +108,8 @@ impl ArrayCurve {
             return -VERY_LARGE_NUMBER;
         }
 
-        let mut idx = (0.5 + (xt - first) / (last - first) * POINTS_IN_ARRAY as f64) as usize;
+        let frac = ((xt - first) / (last - first)).clamp(0.0, 1.0);
+        let mut idx = (frac * POINTS_IN_ARRAY as f64) as usize;
         if idx >= POINTS_IN_ARRAY {
             idx = POINTS_IN_ARRAY - 1;
         }
@@ -138,5 +139,11 @@ mod tests {
     fn returns_sentinel_out_of_bounds() {
         let curve = ArrayCurve::from_points(&[(5.0, 50.0), (15.0, 150.0)]).unwrap();
         assert_eq!(curve.x2y(-1.0), -VERY_LARGE_NUMBER);
+    }
+
+    #[test]
+    fn returns_exact_upper_boundary() {
+        let curve = ArrayCurve::from_points(&[(0.0, 0.0), (10.0, 100.0)]).unwrap();
+        assert_eq!(curve.x2y(10.0), 100.0);
     }
 }

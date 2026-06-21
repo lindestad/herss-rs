@@ -8,8 +8,9 @@ use crate::error::{HerssError, Result};
 use crate::routing::CascadedReservoirs;
 use crate::util::{active_lines, parse_f64_or_zero, tokens};
 use crate::{
-    GRAVITY, MAX_NR_GENERATORS, MOUNT_EVEREST_MASL, NOT_INIT, NOT_INIT_I32, PI, VERY_LARGE_NUMBER,
-    m3s_to_mm3, mm3_to_m3s,
+    GRAVITY, HERSS_AGGRESSIVE_ACTIONS_COST, MAX_NR_GENERATORS, MOUNT_EVEREST_MASL,
+    N_UNIFORM_EFF_CURVE_POINTS, NOT_INIT, NOT_INIT_I32, PI, VERY_LARGE_NUMBER, m3s_to_mm3,
+    mm3_to_m3s,
 };
 use std::fmt::Write as _;
 
@@ -69,6 +70,7 @@ pub(crate) struct Scenario {
     cost_qmin: Vec<f64>,
     start_stop_cost: Vec<f64>,
     adjust_cost: Vec<f64>,
+    cost_aggressive_actions: Vec<f64>,
     hbrutto: Vec<f64>,
     hnetto: Vec<f64>,
     power: Vec<f64>,
@@ -107,6 +109,7 @@ impl Scenario {
             cost_qmin: vec![NOT_INIT; stps],
             start_stop_cost: vec![NOT_INIT; stps],
             adjust_cost: vec![0.0; stps],
+            cost_aggressive_actions: vec![0.0; stps],
             hbrutto: vec![NOT_INIT; stps],
             hnetto: vec![NOT_INIT; stps],
             power: vec![NOT_INIT; stps],
@@ -208,12 +211,17 @@ pub(crate) struct Reservoir {
     use_reservoir_curve: bool,
     reservoir_curve: Vec<(f64, f64)>,
     overflow_curve: Vec<(f64, f64)>,
+    use_overflow_curve: bool,
+    spillway_c: f64,
+    spillway_l: f64,
+    spillway_level_masl: f64,
+    use_spillway: bool,
     min_q_hatch: f64,
     max_q_hatch: f64,
     hatch_masl: f64,
     ac_res_masl_to_mm3: Option<ArrayCurve>,
     ac_res_mm3_to_masl: Option<ArrayCurve>,
-    ac_overflow_masl_to_m3s: ArrayCurve,
+    ac_overflow_masl_to_m3s: Option<ArrayCurve>,
 }
 
 impl Reservoir {
@@ -247,12 +255,33 @@ impl Reservoir {
             use_reservoir_curve: config.use_reservoir_curve,
             reservoir_curve: config.reservoir_curve.clone(),
             overflow_curve: config.overflow_curve.clone(),
+            use_overflow_curve: config.use_overflow_curve,
+            spillway_c: config
+                .spillway
+                .as_ref()
+                .map(|spillway| spillway.c)
+                .unwrap_or(NOT_INIT),
+            spillway_l: config
+                .spillway
+                .as_ref()
+                .map(|spillway| spillway.l)
+                .unwrap_or(NOT_INIT),
+            spillway_level_masl: config
+                .spillway
+                .as_ref()
+                .map(|spillway| spillway.level_masl)
+                .unwrap_or(NOT_INIT),
+            use_spillway: config.spillway.is_some(),
             min_q_hatch: hatch.map(|h| h.min_q).unwrap_or(NOT_INIT),
             max_q_hatch: hatch.map(|h| h.max_q).unwrap_or(NOT_INIT),
             hatch_masl: hatch.map(|h| h.hatch_masl).unwrap_or(NOT_INIT),
             ac_res_masl_to_mm3: None,
             ac_res_mm3_to_masl: None,
-            ac_overflow_masl_to_m3s: ArrayCurve::from_points(&config.overflow_curve)?,
+            ac_overflow_masl_to_m3s: if config.use_overflow_curve {
+                Some(ArrayCurve::from_points(&config.overflow_curve)?)
+            } else {
+                None
+            },
         };
         reservoir.init_array_curves()?;
         Ok(reservoir)
@@ -350,6 +379,28 @@ impl Reservoir {
                 "RES_PENALTY is out of bounds for {name}"
             )));
         }
+        if self.use_overflow_curve && self.use_spillway {
+            return Err(HerssError::new(format!(
+                "Cannot use both OVERFLOW_CURVE and SPILLWAY for {name}"
+            )));
+        }
+        if self.use_spillway {
+            if self.spillway_c < 0.0 || self.spillway_c > 100.0 {
+                return Err(HerssError::new(format!(
+                    "SPILLWAY C is out of bounds for {name}"
+                )));
+            }
+            if self.spillway_l < 0.0 || self.spillway_l > VERY_LARGE_NUMBER {
+                return Err(HerssError::new(format!(
+                    "SPILLWAY L is out of bounds for {name}"
+                )));
+            }
+            if self.spillway_level_masl < 0.0 || self.spillway_level_masl > MOUNT_EVEREST_MASL {
+                return Err(HerssError::new(format!(
+                    "SPILLWAY level masl is out of bounds for {name}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -383,6 +434,22 @@ impl Reservoir {
         Ok(())
     }
 
+    fn filling_at_masl(&self, masl: f64) -> Result<f64> {
+        if self.use_reservoir_geometry {
+            self.calc_res_volume(masl)
+        } else if self.use_reservoir_curve {
+            Ok(self
+                .ac_res_masl_to_mm3
+                .as_ref()
+                .ok_or_else(|| HerssError::new("Reservoir curve not initialized"))?
+                .x2y(masl))
+        } else {
+            Err(HerssError::new(
+                "Reservoir must use geometry or reservoir curve",
+            ))
+        }
+    }
+
     fn validate_level_mm3(&self, level_mm3: f64) -> Result<()> {
         if self.use_reservoir_curve {
             let max = self
@@ -399,33 +466,63 @@ impl Reservoir {
         Ok(())
     }
 
-    fn calc_overflow(&self, dt: f64) -> f64 {
-        let masl_start_overflow = self
-            .overflow_curve
-            .first()
-            .map(|point| point.0)
-            .unwrap_or(self.hrw);
+    fn calc_overflow(&self, dt: f64) -> Result<f64> {
+        let masl_start_overflow = if self.use_overflow_curve {
+            self.overflow_curve
+                .first()
+                .map(|point| point.0)
+                .ok_or_else(|| HerssError::new("Overflow curve is not initialized"))?
+        } else if self.use_spillway {
+            self.spillway_level_masl
+        } else {
+            return Err(HerssError::new("No overflow method is specified"));
+        };
         if self.fast_overflow {
             if self.res_masl > masl_start_overflow {
-                return (self.res_mm3 - self.filling_at_hrw_mm3).max(0.0);
+                let filling_at_start = if self.use_spillway {
+                    self.filling_at_masl(self.spillway_level_masl)?
+                } else {
+                    self.filling_at_hrw_mm3
+                };
+                return Ok((self.res_mm3 - filling_at_start).max(0.0));
             }
-            return 0.0;
+            return Ok(0.0);
         }
 
-        if self.res_masl > masl_start_overflow {
-            let overflow_m3s = self.ac_overflow_masl_to_m3s.x2y(self.res_masl);
+        if self.use_overflow_curve && self.res_masl > masl_start_overflow {
+            if let Some((masl_max, _)) = self.overflow_curve.last() {
+                if self.res_masl > *masl_max {
+                    return Err(HerssError::new(
+                        "Reservoir level is above maximum overflow curve level",
+                    ));
+                }
+            }
+            let overflow_m3s = self
+                .ac_overflow_masl_to_m3s
+                .as_ref()
+                .ok_or_else(|| HerssError::new("Overflow curve is not initialized"))?
+                .x2y(self.res_masl);
             let overflow_mm3 = m3s_to_mm3(overflow_m3s, dt);
-            return overflow_mm3
+            return Ok(overflow_mm3
                 .min(self.res_mm3 - self.filling_at_hrw_mm3)
-                .max(0.0);
+                .max(0.0));
         }
-        0.0
+
+        if self.use_spillway && self.res_masl > self.spillway_level_masl {
+            let head_m = self.res_masl - self.spillway_level_masl;
+            let overflow_m3s = self.spillway_c * self.spillway_l * head_m * head_m.sqrt();
+            let overflow_mm3 = m3s_to_mm3(overflow_m3s, dt);
+            let max_overflow = self.res_mm3 - self.filling_at_masl(self.spillway_level_masl)?;
+            return Ok(overflow_mm3.min(max_overflow).max(0.0));
+        }
+        Ok(0.0)
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Generator {
-    eff_curve: ArrayCurve,
+    eff_curve: Option<ArrayCurve>,
+    uniform_normalized_curve: Option<Vec<f64>>,
     action: Vec<f64>,
     max_discharge: f64,
 }
@@ -433,7 +530,12 @@ pub(crate) struct Generator {
 impl Generator {
     fn from_config(config: &GeneratorConfig, stps: usize) -> Result<Self> {
         Ok(Self {
-            eff_curve: ArrayCurve::from_points(&config.turbine_curve)?,
+            eff_curve: if config.uniform_normalized_curve.is_some() {
+                None
+            } else {
+                Some(ArrayCurve::from_points(&config.turbine_curve)?)
+            },
+            uniform_normalized_curve: config.uniform_normalized_curve.clone(),
             action: vec![0.0; stps],
             max_discharge: config.max_discharge,
         })
@@ -496,6 +598,24 @@ impl Powerstation {
                 "Local energy equivalent in {} is out of bounds",
                 common.nodename
             )));
+        }
+        for generator in &self.generators {
+            if generator.max_discharge < 0.0 {
+                return Err(HerssError::new(format!(
+                    "Negative max discharge in {}",
+                    common.nodename
+                )));
+            }
+            if let Some(curve) = &generator.uniform_normalized_curve {
+                for efficiency in curve {
+                    if !(*efficiency >= 0.0 && *efficiency <= 100.0) {
+                        return Err(HerssError::new(format!(
+                            "Invalid efficiency value in uniform normalized curve for {}",
+                            common.nodename
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -588,6 +708,7 @@ pub struct Riversystem {
     pub avg_price: f64,
     pub sum_startstopcost: f64,
     pub sum_max_adjustment_cost: f64,
+    pub sum_aggressive_actions_cost: f64,
     pub sum_lrw_cost: f64,
     pub sum_qmin_cost: f64,
     systemname: String,
@@ -896,6 +1017,10 @@ impl Herss {
                         for t in 0..data.stps {
                             node.scenario.action[t][node.common.idnr] = data.action[t][col_idx];
                         }
+                    } else {
+                        for t in 0..data.stps {
+                            node.scenario.action[t][node.common.idnr] = 0.0;
+                        }
                     }
                     let _ = reservoir;
                 }
@@ -999,6 +1124,7 @@ impl Riversystem {
             avg_price: 0.0,
             sum_startstopcost: 0.0,
             sum_max_adjustment_cost: 0.0,
+            sum_aggressive_actions_cost: 0.0,
             sum_lrw_cost: 0.0,
             sum_qmin_cost: 0.0,
             systemname: gc.systemname.clone(),
@@ -1064,7 +1190,11 @@ impl Riversystem {
                 let NodeData::Reservoir(reservoir) = &self.nodes[idx].data else {
                     unreachable!();
                 };
-                (reservoir.res_masl, reservoir.res_mm3, reservoir.hrw)
+                (
+                    reservoir.res_masl,
+                    (reservoir.res_mm3 - reservoir.filling_at_lrw_mm3).max(0.0),
+                    reservoir.hrw,
+                )
             };
             self.nodes[downstream].common.start_of_stp_masl = start_masl.min(hrw);
             self.nodes[downstream].common.up_res_mm3 = up_res_mm3;
@@ -1132,7 +1262,7 @@ impl Riversystem {
             };
 
             reservoir.update_masl()?;
-            let overflow_mm3 = reservoir.calc_overflow(dt);
+            let overflow_mm3 = reservoir.calc_overflow(dt)?;
             if let Some(downstream) = node.common.downstream_idnr_overflow {
                 overflow_transfer = Some((downstream, mm3_to_m3s(overflow_mm3, dt)));
             }
@@ -1222,7 +1352,8 @@ impl Riversystem {
 
         let q_mm3 = m3s_to_mm3(flow, dt);
         if q_mm3 > node.common.up_res_mm3 {
-            powerstation.aggressive_actions_cost = (q_mm3 - node.common.up_res_mm3) * 900_000_000.0;
+            powerstation.aggressive_actions_cost =
+                (q_mm3 - node.common.up_res_mm3) * HERSS_AGGRESSIVE_ACTIONS_COST;
             flow = 0.0;
         }
         Ok(flow)
@@ -1250,6 +1381,13 @@ impl Riversystem {
                 total_q += q_gen[g];
             }
 
+            if total_q > node.scenario.up_inflow[t] * 1.000001 {
+                total_q = 0.0;
+                for q in &mut q_gen {
+                    *q = 0.0;
+                }
+            }
+
             if total_q > 0.001 && total_q < node.common.powstat_min_discharge {
                 // C++ warns but keeps the soft constraint.
             }
@@ -1266,7 +1404,7 @@ impl Riversystem {
                 last_hnetto = hnetto;
                 for (g, generator) in powerstation.generators.iter().enumerate() {
                     let q = q_gen[g];
-                    let turbine_efficiency = generator_efficiency(generator, q);
+                    let turbine_efficiency = generator_efficiency(generator, q)?;
                     if turbine_efficiency < 0.0 {
                         return Err(HerssError::new(format!(
                             "Turbine efficiency failed in {}",
@@ -1285,7 +1423,7 @@ impl Riversystem {
                     let headloss = powerstation.headlosscoef * q * q;
                     let hnetto = hbrutto - headloss;
                     last_hnetto = hnetto;
-                    let turbine_efficiency = generator_efficiency(generator, q);
+                    let turbine_efficiency = generator_efficiency(generator, q)?;
                     if turbine_efficiency < 0.0 {
                         return Err(HerssError::new(format!(
                             "Turbine efficiency failed in {}",
@@ -1325,7 +1463,8 @@ impl Riversystem {
             node.scenario.power[t] = total_power;
             node.scenario.estimated_eekv[t] = est_eekv;
             node.scenario.start_stop_cost[t] = startstop_cost;
-            node.scenario.adjust_cost[t] = powerstation.aggressive_actions_cost;
+            node.scenario.adjust_cost[t] = 0.0;
+            node.scenario.cost_aggressive_actions[t] = powerstation.aggressive_actions_cost;
             node.scenario.tot_outflow[t] = total_q;
             node.scenario.inflow[t] = 0.0;
             node.common.remaining_mm3 = 0.0;
@@ -1441,11 +1580,13 @@ impl Riversystem {
             .sum();
         self.sum_startstopcost = 0.0;
         self.sum_max_adjustment_cost = 0.0;
+        self.sum_aggressive_actions_cost = 0.0;
         for node in &self.nodes {
             if node.common.nodetype == NodeType::Pstation {
                 for t in 0..node.scenario.stps {
-                    self.sum_startstopcost += node.scenario.cost[t] - node.scenario.adjust_cost[t];
+                    self.sum_startstopcost += node.scenario.start_stop_cost[t];
                     self.sum_max_adjustment_cost += node.scenario.adjust_cost[t];
+                    self.sum_aggressive_actions_cost += node.scenario.cost_aggressive_actions[t];
                 }
             }
         }
@@ -1561,6 +1702,12 @@ impl Riversystem {
             out,
             "sum_max_adjustment_cost      = {:.3}",
             self.sum_max_adjustment_cost
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "sum_aggressive_actions_cost  = {:.3}",
+            self.sum_aggressive_actions_cost
         )
         .unwrap();
         writeln!(
@@ -1764,7 +1911,30 @@ impl Node {
             self.common.idnr, self.common.nodename
         )
         .unwrap();
-        writeln!(out, "reservoir_init_fr= {:.5}", reservoir.reservoir_init_fr).unwrap();
+        writeln!(
+            out,
+            "reservoir_init_fr= {:.5}  masl={:.3}",
+            reservoir.reservoir_init_fr, reservoir.res_masl
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "Filling at HRW [Mm3] = {:.5}",
+            reservoir.filling_at_hrw_mm3
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "Filling at LRW [Mm3] = {:.5}",
+            reservoir.filling_at_lrw_mm3
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "Active reservoir capacity [Mm3] = {:.5}",
+            reservoir.filling_at_hrw_mm3 - reservoir.filling_at_lrw_mm3
+        )
+        .unwrap();
         writeln!(out, "yyyy mm dd hh [m3/s] [Euro/MWh] [fr] [m3/s] [Mm3] [masl] [fr] [Euro]         [m3/s]     [m3/s]    [m3/s]   [m3/s]    [m3/s] ").unwrap();
         writeln!(out, "yyyy mm dd hh Inflow Price Action Up_Inflow Res_Mm3 Res_masl Res_fr lrw_cost tunnelflow hatchflow overflow auto_qmin tot_outflow").unwrap();
         for t in 0..self.scenario.stps {
@@ -1820,7 +1990,7 @@ impl Node {
         }
         writeln!(
             out,
-            " [m3/s] [m3/s] [Euro] [Euro] [m] [m] [MWh] [Euro] [Euro] [GWh/Mm3]"
+            " [m3/s] [m3/s] [m] [m] [MWh] [GWh/Mm3] [Euro] [Euro] [Euro] [Euro] [Euro] [Euro]"
         )
         .unwrap();
         write!(out, "yyyy mm dd hh Up_Inflow Price").unwrap();
@@ -1829,7 +1999,7 @@ impl Node {
         }
         writeln!(
             out,
-            " tot_outflow auto_qmin income startstopCost Hnetto Hbrutto Power adjust_cost profit est_eekv"
+            " tot_outflow auto_qmin Hnetto Hbrutto Power est_eekv income tot_cost startstopCost adjust_cost cost_aggressive_actions profit"
         )
         .unwrap();
         for t in 0..self.scenario.stps {
@@ -1849,17 +2019,19 @@ impl Node {
             }
             writeln!(
                 out,
-                " {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}",
+                " {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4} {:.4}",
                 self.scenario.tot_outflow[t],
                 self.scenario.auto_qmin_m3s[t],
-                self.scenario.income[t],
-                self.scenario.cost[t] - self.scenario.adjust_cost[t],
                 self.scenario.hnetto[t],
                 self.scenario.hbrutto[t],
                 self.scenario.power[t],
+                self.scenario.estimated_eekv[t],
+                self.scenario.income[t],
+                self.scenario.cost[t],
+                self.scenario.start_stop_cost[t],
                 self.scenario.adjust_cost[t],
-                self.scenario.profit[t],
-                self.scenario.estimated_eekv[t]
+                self.scenario.cost_aggressive_actions[t],
+                self.scenario.profit[t]
             )
             .unwrap();
         }
@@ -1905,12 +2077,50 @@ impl Node {
     }
 }
 
-fn generator_efficiency(generator: &Generator, q: f64) -> f64 {
-    if (q - generator.eff_curve.xmax).abs() < 1e-12 {
-        0.0
-    } else {
-        generator.eff_curve.x2y(q) / 100.0
+fn generator_efficiency(generator: &Generator, q: f64) -> Result<f64> {
+    if q < -0.000001 {
+        return Err(HerssError::new("Generator discharge is negative"));
     }
+    if q < 0.000001 {
+        return Ok(0.0);
+    }
+    if q > generator.max_discharge * 1.000001 {
+        return Err(HerssError::new(
+            "Generator discharge is above maximum discharge",
+        ));
+    }
+
+    if let Some(curve) = &generator.uniform_normalized_curve {
+        if curve.len() != N_UNIFORM_EFF_CURVE_POINTS {
+            return Err(HerssError::new(format!(
+                "UNIFORM_NORMALIZED_CURVE requires {N_UNIFORM_EFF_CURVE_POINTS} points"
+            )));
+        }
+        if generator.max_discharge <= 0.0 {
+            return Err(HerssError::new(
+                "Generator max discharge must be positive for UNIFORM_NORMALIZED_CURVE",
+            ));
+        }
+        let q_normalized = q / generator.max_discharge;
+        if q_normalized <= 0.0 {
+            return Ok(curve[0] / 100.0);
+        }
+        if q_normalized >= 1.0 {
+            return Ok(curve[N_UNIFORM_EFF_CURVE_POINTS - 1] / 100.0);
+        }
+
+        let scaled = q_normalized * (N_UNIFORM_EFF_CURVE_POINTS - 1) as f64;
+        let idx = scaled.floor() as usize;
+        let fraction = scaled - idx as f64;
+        let eta = curve[idx] + fraction * (curve[idx + 1] - curve[idx]);
+        return Ok(eta / 100.0);
+    }
+
+    let eff_curve = generator
+        .eff_curve
+        .as_ref()
+        .ok_or_else(|| HerssError::new("Generator turbine curve is not initialized"))?;
+    Ok(eff_curve.x2y(q) / 100.0)
 }
 
 impl Powerstation {

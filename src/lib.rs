@@ -12,8 +12,8 @@ pub use dataset::Dataset;
 pub use error::{HerssError, Result};
 pub use model::{Herss, Riversystem};
 
-pub const VERSION: &str = "3.1.02";
-pub const VERSION_DATE: &str = "20260605";
+pub const VERSION: &str = "3.1.03";
+pub const VERSION_DATE: &str = "20260611";
 
 pub(crate) const MAX_NR_NODES: usize = 30;
 pub(crate) const MAX_WORDS: usize = 200;
@@ -22,6 +22,8 @@ pub(crate) const MAX_TRAVELTIME_HOURS: f64 = 240.0;
 pub(crate) const MAX_NR_POINTS_CURVE: usize = 50;
 pub(crate) const MAX_NR_GENERATORS: usize = 6;
 pub(crate) const MAX_NR_CASCADED_RESERVOIRS: usize = 10;
+pub(crate) const N_UNIFORM_EFF_CURVE_POINTS: usize = 11;
+pub(crate) const HERSS_AGGRESSIVE_ACTIONS_COST: f64 = 1000.0;
 pub(crate) const GRAVITY: f64 = 9.80665;
 pub(crate) const PI: f64 = std::f64::consts::PI;
 pub(crate) const MOUNT_EVEREST_MASL: f64 = 8848.0;

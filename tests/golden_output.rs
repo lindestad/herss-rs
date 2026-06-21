@@ -10,6 +10,8 @@ fn golden_output_cases_match_references() {
         "data/mini_utahps_new_inputformat",
         "data/res_casc_A",
         "data/res_casc_B",
+        "data/res_casc_C",
+        "data/res_casc_D",
     ] {
         run_case(case);
     }
